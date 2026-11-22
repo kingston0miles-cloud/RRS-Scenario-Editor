@@ -678,6 +678,22 @@ void MapWidget::paintEvent(QPaintEvent *)
         }
     }
 
+    // Призрак перетаскиваемого поезда
+    {
+        bool valid = false;
+        const PlacedTrain g = dragGhost(&valid);
+
+        if (valid)
+        {
+            const PlacementCheck chk = scenario_->check(*route_, g, selected_train_);
+
+            p.setFont(small_font);
+            drawFootprint(p, t, chk.footprint,
+                          chk.hasProblems() ? QColor(210, 40, 40) : QColor(40, 110, 220),
+                          g.name, g.dir, true);
+        }
+    }
+
     // Призрак состава под курсором в режиме расстановки
     if (placement_ != nullptr && hover_.valid && scenario_ != nullptr)
     {
@@ -834,8 +850,124 @@ void MapWidget::wheelEvent(QWheelEvent *event)
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
+static double distToSegment(const QPointF &p, const QPointF &a, const QPointF &b)
+{
+    const QPointF ab = b - a;
+    const double len2 = ab.x() * ab.x() + ab.y() * ab.y();
+    double t = 0.0;
+
+    if (len2 > 1e-12)
+    {
+        t = ((p.x() - a.x()) * ab.x() + (p.y() - a.y()) * ab.y()) / len2;
+        t = std::clamp(t, 0.0, 1.0);
+    }
+
+    const QPointF q = a + ab * t;
+    const QPointF d = p - q;
+
+    return std::sqrt(d.x() * d.x() + d.y() * d.y());
+}
+
+int MapWidget::trainAt(const QPoint &pos, int prefer) const
+{
+    if (scenario_ == nullptr || route_ == nullptr)
+    {
+        return -1;
+    }
+
+    const QTransform t = worldToScreen();
+    int best = -1;
+    double best_d = HOVER_RADIUS_PX;
+
+    for (int i = 0; i < scenario_->size(); ++i)
+    {
+        const PlacedTrain &tr = scenario_->trains()[i];
+        const Footprint fp = computeFootprint(*route_, tr.trajectory, tr.coord, tr.dir, tr.length);
+
+        for (const FootprintSegment &seg : fp.segments)
+        {
+            const TrajectoryData *traj = route_->find(seg.trajectory);
+
+            if (traj == nullptr)
+            {
+                continue;
+            }
+
+            const QVector<QPointF> pts = traj->subPolyline(seg.from, seg.to);
+
+            for (int j = 0; j + 1 < pts.size(); ++j)
+            {
+                const double d = distToSegment(QPointF(pos), t.map(pts[j]), t.map(pts[j + 1]));
+
+                // выбранный поезд имеет приоритет при близких расстояниях
+                const double score = (i == prefer) ? d - 3.0 : d;
+
+                if (score < best_d)
+                {
+                    best_d = score;
+                    best = i;
+                }
+            }
+        }
+    }
+
+    return best;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+PlacedTrain MapWidget::dragGhost(bool *valid) const
+{
+    *valid = false;
+
+    if (!train_drag_ || selected_train_ < 0 || selected_train_ >= scenario_->size() || !hover_.valid)
+    {
+        return PlacedTrain();
+    }
+
+    PlacedTrain g = scenario_->trains()[selected_train_];
+
+    if (hover_.trajectory != g.trajectory)
+    {
+        const int o = route_->orientation(hover_.trajectory);
+        g.dir = (o != 0) ? o : 1;
+    }
+
+    g.trajectory = hover_.trajectory;
+    g.coord = hover_.coord;
+    *valid = true;
+
+    return g;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
 void MapWidget::mousePressEvent(QMouseEvent *event)
 {
+    press_train_ = -1;
+
+    // Выбранный поезд тянем мышью; щелчок по другому - выбирает его
+    if (event->button() == Qt::LeftButton && placement_ == nullptr && !pick_)
+    {
+        const int hit = trainAt(event->pos(), selected_train_);
+
+        if (hit >= 0 && hit == selected_train_)
+        {
+            train_drag_ = true;
+            dragging_ = true;
+            moved_ = false;
+            press_pos_ = event->pos();
+            last_pos_ = event->pos();
+            setCursor(Qt::SizeAllCursor);
+            update();
+            return;
+        }
+
+        press_train_ = hit;
+    }
+
     if (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton)
     {
         dragging_ = true;
@@ -851,6 +983,18 @@ void MapWidget::mousePressEvent(QMouseEvent *event)
 //------------------------------------------------------------------------------
 void MapWidget::mouseMoveEvent(QMouseEvent *event)
 {
+    if (train_drag_)
+    {
+        if ((event->pos() - press_pos_).manhattanLength() > 3)
+        {
+            moved_ = true;
+        }
+
+        updateHover(event->pos());
+        update();
+        return;
+    }
+
     if (dragging_)
     {
         bool ok = false;
@@ -880,6 +1024,37 @@ void MapWidget::mouseMoveEvent(QMouseEvent *event)
 //------------------------------------------------------------------------------
 void MapWidget::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (train_drag_ && event->button() == Qt::LeftButton)
+    {
+        bool valid = false;
+        const PlacedTrain g = dragGhost(&valid);
+        const int index = selected_train_;
+
+        train_drag_ = false;
+        dragging_ = false;
+        unsetCursor();
+        update();
+
+        if (moved_ && valid && index >= 0)
+        {
+            emit trainDropped(index, g.trajectory, g.coord, g.dir);
+        }
+
+        return;
+    }
+
+    if (event->button() == Qt::LeftButton && press_train_ >= 0 && dragging_ && !moved_)
+    {
+        const int idx = press_train_;
+
+        press_train_ = -1;
+        dragging_ = false;
+        unsetCursor();
+        emit trainClicked(idx);
+
+        return;
+    }
+
     if (dragging_ && (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton))
     {
         dragging_ = false;

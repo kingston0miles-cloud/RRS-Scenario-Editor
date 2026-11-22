@@ -71,6 +71,10 @@ public:
         return scenario_;
     }
 
+protected:
+
+    void closeEvent(QCloseEvent *event) override;
+
 public slots:
 
     /// Щелчок по пути в режиме расстановки: диалог подтверждения и добавление поезда
@@ -78,6 +82,10 @@ public slots:
 
     /// Развернуть поезд на месте (голова переходит на место хвоста)
     void reverseTrain(int index);
+
+    /// Перенести поезд головой в (траектория, координата) с направлением dir (перетаскивание
+    /// мышью). false - нельзя (пересечение, тупик), поезд остаётся на месте
+    bool moveTrain(int index, const QString &trajectory, double coord, int dir);
 
     /// Изменить положение, имя и флаг бота поезда в диалоге
     void editTrain(int index);
@@ -157,6 +165,12 @@ public slots:
         return project_path_;
     }
 
+    /// Есть несохранённые изменения (расстановка, расписания, события, описание)
+    bool isModified() const;
+
+    /// Считать текущее состояние сохранённым
+    void markClean();
+
     /// Подсветить на карте путь выбранного поезда по расписанию
     void updateTripOverlay();
 
@@ -178,6 +192,7 @@ private:
     PlacedTrain template_;
     bool has_template_ = false;
 
+    QByteArray clean_snapshot_;
     ProjectInfo project_info_;
     QString project_path_;
 

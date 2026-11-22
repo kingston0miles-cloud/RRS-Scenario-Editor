@@ -87,6 +87,13 @@ public slots:
 
 signals:
 
+    /// Выбранный поезд перетащен мышью: голова брошена на (траектория, координата),
+    /// dir - направление головы (на новом пути - по ходу пути)
+    void trainDropped(int index, const QString &trajectory, double coord, int dir);
+
+    /// Щелчок по поезду на карте (без перетаскивания)
+    void trainClicked(int index);
+
     /// Левый щелчок (без перетаскивания) по пути в режиме расстановки
     void trackClicked(const rse::Route::Hit &hit);
 
@@ -113,6 +120,8 @@ private:
     const PlacedTrain *placement_ = nullptr;
     int selected_train_ = -1;
     bool pick_ = false;
+    bool train_drag_ = false;
+    int press_train_ = -1;
     QVector<PathSegment> trip_path_;
     QVector<TimetableStation> trip_stations_;
 
@@ -139,6 +148,12 @@ private:
     QTransform worldToScreen() const;
 
     void updateHover(const QPoint &pos);
+
+    /// Индекс поезда под точкой экрана (-1 - нет); prefer - проверить его первым
+    int trainAt(const QPoint &pos, int prefer) const;
+
+    /// Состав в положении, куда его сейчас тащат (valid - курсор над путём)
+    PlacedTrain dragGhost(bool *valid) const;
 
     /// Стрелки вдоль полилинии; neutral - вместо стрелок точки (направление неизвестно)
     void drawArrows(QPainter &p, const QPolygonF &poly, bool neutral = false) const;

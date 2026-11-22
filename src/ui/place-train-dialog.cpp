@@ -1,6 +1,9 @@
 #include    "ui/place-train-dialog.h"
 
 #include    <QCheckBox>
+#include    <QComboBox>
+#include    <QCompleter>
+#include    <QSignalBlocker>
 #include    <QDialogButtonBox>
 #include    <QDoubleSpinBox>
 #include    <QFormLayout>
@@ -41,7 +44,24 @@ PlaceTrainDialog::PlaceTrainDialog(const Route &route, const Scenario &scenario,
 
     auto *form = new QFormLayout;
 
-    form->addRow(tr("Путь:"), new QLabel(train_.trajectory, this));
+    waypoint_box_ = new QComboBox(this);
+    waypoint_box_->addItem(tr("— перенести в путевую точку маршрута —"));
+
+    for (const WaypointData &w : route_.waypoints())
+    {
+        waypoint_box_->addItem(tr("%1 (голова %2)").arg(w.title, w.dir >= 0 ? tr("к концу") : tr("к началу")));
+    }
+
+    form->addRow(tr("Путевая точка:"), waypoint_box_);
+
+    traj_box_ = new QComboBox(this);
+    traj_box_->setEditable(true);
+    traj_box_->setInsertPolicy(QComboBox::NoInsert);
+    traj_box_->addItems(route_.trajectories().keys());
+    traj_box_->completer()->setFilterMode(Qt::MatchContains);
+    traj_box_->completer()->setCaseSensitivity(Qt::CaseInsensitive);
+    traj_box_->setEditText(train_.trajectory);
+    form->addRow(tr("Путь:"), traj_box_);
 
     const TrajectoryData *traj = route_.find(train_.trajectory);
 
@@ -90,6 +110,8 @@ PlaceTrainDialog::PlaceTrainDialog(const Route &route, const Scenario &scenario,
     connect(buttons_, &QDialogButtonBox::rejected, this, &QDialog::reject);
     connect(flip_button_, &QPushButton::clicked, this, &PlaceTrainDialog::onFlip);
     connect(coord_box_, &QDoubleSpinBox::valueChanged, this, &PlaceTrainDialog::refresh);
+    connect(traj_box_, &QComboBox::currentTextChanged, this, &PlaceTrainDialog::onTrajectoryEdited);
+    connect(waypoint_box_, QOverload<int>::of(&QComboBox::activated), this, &PlaceTrainDialog::onWaypointChosen);
     connect(name_edit_, &QLineEdit::textChanged, this, &PlaceTrainDialog::refresh);
 
     refresh();
@@ -153,6 +175,67 @@ PlacedTrain PlaceTrainDialog::current() const
 PlacedTrain PlaceTrainDialog::result() const
 {
     return current();
+}
+
+//------------------------------------------------------------------------------
+// Перенос на другой путь: голова встаёт в начало пути по правильному направлению
+//------------------------------------------------------------------------------
+void PlaceTrainDialog::onTrajectoryEdited(const QString &text)
+{
+    const TrajectoryData *traj = route_.find(text);
+
+    if (traj == nullptr || text == train_.trajectory)
+    {
+        return;
+    }
+
+    train_.trajectory = text;
+
+    const int o = route_.orientation(text);
+    train_.dir = (o != 0) ? o : 1;
+
+    {
+        const QSignalBlocker b(coord_box_);
+        coord_box_->setRange(0.0, traj->length);
+        coord_box_->setValue(std::min(std::max(train_.coord, 0.0), traj->length));
+
+        // середина пути - чтобы состав гарантированно поместился
+        coord_box_->setValue(traj->length / 2.0);
+    }
+
+    refresh();
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+void PlaceTrainDialog::onWaypointChosen(int index)
+{
+    if (index <= 0 || index > route_.waypoints().size())
+    {
+        return;
+    }
+
+    const WaypointData &w = route_.waypoints()[index - 1];
+    const TrajectoryData *traj = route_.find(w.trajectory);
+
+    if (traj == nullptr)
+    {
+        return;
+    }
+
+    train_.trajectory = w.trajectory;
+    train_.dir = (w.dir >= 0) ? 1 : -1;
+
+    {
+        const QSignalBlocker b1(coord_box_);
+        const QSignalBlocker b2(traj_box_);
+        coord_box_->setRange(0.0, traj->length);
+        coord_box_->setValue(std::min(std::max(w.coord, 0.0), traj->length));
+        traj_box_->setEditText(w.trajectory);
+    }
+
+    refresh();
 }
 
 //------------------------------------------------------------------------------

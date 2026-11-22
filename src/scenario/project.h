@@ -45,6 +45,9 @@ int suggestStartTime(const Scenario &scenario);
 bool saveProject(const QString &path, const ProjectInfo &info, const Scenario &scenario,
                  QString *error = nullptr);
 
+/// Содержимое проекта в виде байтов (для сравнения «изменён ли проект»)
+QByteArray projectSnapshot(const ProjectInfo &info, const Scenario &scenario);
+
 /// Прочитать проект. Длина, масса и признак автопилота поездов берутся из файла
 /// (при необходимости их пересчитывают по каталогу)
 bool loadProject(const QString &path, ProjectInfo *info, Scenario *scenario,

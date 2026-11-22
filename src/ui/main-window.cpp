@@ -12,6 +12,8 @@
 #include    "ui/rolling-stock-panel.h"
 
 #include    <QAction>
+#include    <QCloseEvent>
+#include    <QPushButton>
 #include    <QDir>
 #include    <QDockWidget>
 #include    <QFileDialog>
@@ -90,6 +92,7 @@ MainWindow::MainWindow(QWidget *parent)
     catalog_.loadManualModules(manualModulesPath());
 
     createActions();
+    markClean();
     updateInfo();
 
     connect(map_, &MapWidget::hoverChanged, this, &MainWindow::onHoverChanged);
@@ -128,6 +131,10 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     connect(map_, &MapWidget::trackClicked, this, &MainWindow::placeAt);
+
+    connect(map_, &MapWidget::trainDropped, this,
+            [this](int index, const QString &traj, double coord, int dir) { moveTrain(index, traj, coord, dir); });
+    connect(map_, &MapWidget::trainClicked, this, [this](int index) { trains_panel_->setCurrentIndex(index); });
 
     connect(trains_panel_, &TrainsPanel::removeRequested, this, &MainWindow::removeTrain);
     connect(trains_panel_, &TrainsPanel::reverseRequested, this, &MainWindow::reverseTrain);
@@ -346,6 +353,7 @@ bool MainWindow::openRoute(const QString &route_dir)
     project_info_.events.clear();
     trains_panel_->refresh();
     events_panel_->refresh();
+    markClean();
 
     map_->setRoute(&route_);
 
@@ -479,6 +487,54 @@ void MainWindow::reverseTrain(int index)
     scenario_.replace(index, t);
     trains_panel_->refresh();
     map_->update();
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+bool MainWindow::moveTrain(int index, const QString &trajectory, double coord, int dir)
+{
+    if (index < 0 || index >= scenario_.size())
+    {
+        return false;
+    }
+
+    PlacedTrain t = scenario_.trains()[index];
+
+    if (t.trajectory == trajectory && t.coord == coord && t.dir == dir)
+    {
+        return true;
+    }
+
+    t.trajectory = trajectory;
+    t.coord = coord;
+    t.dir = dir;
+    t.timetable = Timetable();
+
+    const PlacementCheck chk = scenario_.check(route_, t, index);
+
+    if (chk.hasProblems())
+    {
+        statusBar()->showMessage(chk.overlap > 0.0
+                                 ? tr("Здесь нельзя: состав пересекается с другим поездом")
+                                 : tr("Здесь нельзя: состав не умещается на путях"), 5000);
+        return false;
+    }
+
+    const bool had_timetable = scenario_.trains()[index].timetable.valid;
+
+    scenario_.replace(index, t);
+    trains_panel_->refresh();
+    trains_panel_->setCurrentIndex(index);
+    updateTripOverlay();
+    map_->update();
+
+    statusBar()->showMessage(had_timetable
+                             ? tr("Поезд «%1» перенесён на %2; расписание сброшено — задайте его заново")
+                               .arg(t.name, trajectory)
+                             : tr("Поезд «%1» перенесён на %2").arg(t.name, trajectory), 6000);
+
+    return true;
 }
 
 //------------------------------------------------------------------------------
@@ -683,6 +739,57 @@ bool MainWindow::applyConsistEdit(int index, const PlacedTrain &edited, const QV
 }
 
 //------------------------------------------------------------------------------
+// Несохранённые изменения
+//------------------------------------------------------------------------------
+bool MainWindow::isModified() const
+{
+    return projectSnapshot(project_info_, scenario_) != clean_snapshot_;
+}
+
+void MainWindow::markClean()
+{
+    clean_snapshot_ = projectSnapshot(project_info_, scenario_);
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (!isModified())
+    {
+        event->accept();
+        return;
+    }
+
+    QMessageBox box(QMessageBox::Question, tr("Несохранённые изменения"),
+                    tr("В сценарии есть несохранённые изменения. Сохранить проект?"),
+                    QMessageBox::NoButton, this);
+    QPushButton *save = box.addButton(tr("Сохранить"), QMessageBox::AcceptRole);
+    QPushButton *discard = box.addButton(tr("Не сохранять"), QMessageBox::DestructiveRole);
+    box.addButton(tr("Отмена"), QMessageBox::RejectRole);
+    box.setDefaultButton(save);
+    box.exec();
+
+    if (box.clickedButton() == save)
+    {
+        if (saveProject())
+        {
+            event->accept();
+        }
+        else
+        {
+            event->ignore();
+        }
+    }
+    else if (box.clickedButton() == discard)
+    {
+        event->accept();
+    }
+    else
+    {
+        event->ignore();
+    }
+}
+
+//------------------------------------------------------------------------------
 // Проект: сохранение и загрузка
 //------------------------------------------------------------------------------
 bool MainWindow::saveProject()
@@ -730,6 +837,7 @@ bool MainWindow::saveProjectAs(const QString &path_in)
     }
 
     project_path_ = path;
+    markClean();
 
     QSettings settings(SETTINGS_ORG, SETTINGS_APP);
     settings.setValue("lastProjectDir", QFileInfo(path).absolutePath());
@@ -787,6 +895,7 @@ bool MainWindow::openProject(const QString &path)
 
     project_info_ = info;
     project_path_ = path;
+    markClean();
 
     QSettings settings(SETTINGS_ORG, SETTINGS_APP);
     settings.setValue("lastProjectDir", QFileInfo(path).absolutePath());
@@ -849,6 +958,7 @@ bool MainWindow::importScenarioDir(const QString &dir, bool interactive, QString
     scenario_ = res.scenario;
     project_info_ = res.info;
     project_path_.clear();
+    markClean();
 
     trains_panel_->refresh();
     events_panel_->refresh();

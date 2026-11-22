@@ -13,11 +13,14 @@
 #include    <QTimer>
 
 #include    "ui/main-window.h"
+#include    "ui/place-train-dialog.h"
 #include    "ui/rolling-stock-panel.h"
 #include    "ui/trains-panel.h"
 #include    "ui/event-dialog.h"
 #include    "ui/events-panel.h"
 #include    <QPushButton>
+#include    <QMouseEvent>
+#include    <QDoubleSpinBox>
 #include    <QComboBox>
 #include    <QLayout>
 #include    "ui/map-widget.h"
@@ -139,6 +142,7 @@ private slots:
     void mainWindowExportsAndReopensProject();
     void mainWindowEventsWithMapPick();
     void mainWindowImportsScenario();
+    void dragAndRelocateTrain();
     void saveTrainRejectsBadInput();
     void composerDialog();
     void mainWindowComposesAndSavesTrain();
@@ -648,18 +652,24 @@ void TestConsist::mainWindowExportsAndReopensProject()
     QVERIFY(w.catalog().findTrain("demo-P2") != nullptr);
 
     // Проект: сохранить, открыть в другом окне
+    QVERIFY(w.isModified());
     const QString proj = root.path() + "/p.rrsproj";
     QVERIFY(w.saveProjectAs(proj));
+    QVERIFY(!w.isModified());
     QCOMPARE(w.projectInfo().scenarioName, QString("demo"));
 
     MainWindow w2;
+    QVERIFY(!w2.isModified());
     QVERIFY(w2.openProject(proj));
+    QVERIFY(!w2.isModified());
     QCOMPARE(w2.scenario().size(), 2);
     QCOMPARE(w2.scenario().trains()[0].name, QString("P1"));
     QVERIFY(w2.scenario().trains()[0].autoMode);
     QVERIFY(qAbs(w2.scenario().trains()[1].length - 40.0) < 1e-6);
     QCOMPARE(w2.projectInfo().scenarioName, QString("demo"));
     QCOMPARE(w2.trainsPanel()->rowCount(), 2);
+    w2.removeTrain(0);
+    QVERIFY(w2.isModified());
 }
 
 void TestConsist::mainWindowEventsWithMapPick()
@@ -768,6 +778,78 @@ void TestConsist::mainWindowImportsScenario()
     QVERIFY(lua.contains("tr.name = \"A\""));
     QVERIFY(lua.contains("logMessage(\"x\")"));
     QVERIFY(lua.contains("setTimeTrigger(\"10:05:00\", event1_actions)"));
+}
+
+void TestConsist::dragAndRelocateTrain()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    buildGame(root.path());
+    buildRoute(root.path() + "/routes/r");
+
+    MainWindow w;
+    w.resize(900, 700);
+    w.show();
+    QVERIFY(w.openRoute(root.path() + "/routes/r"));
+
+    PlacedTrain t = trainFrom(w.catalog(), "poezd", "T", 200.0, 1);
+    t.name = "P1";
+    const_cast<Scenario &>(w.scenario()).add(t);
+    w.trainsPanel()->refresh();
+    w.trainsPanel()->setCurrentIndex(0);
+
+    // Перенос программно: на другой путь, пересечение и тупик запрещены
+    QVERIFY(w.moveTrain(0, "T", 300.0, 1));
+    QCOMPARE(w.scenario().trains()[0].coord, 300.0);
+    QVERIFY(!w.moveTrain(0, "S", 10.0, 1));          // тупик 25 м, состав 50 м
+    QCOMPARE(w.scenario().trains()[0].trajectory, QString("T"));
+
+    PlacedTrain other = t;
+    other.name = "P2";
+    other.coord = 100.0;
+    const_cast<Scenario &>(w.scenario()).add(other);
+    QVERIFY(!w.moveTrain(0, "T", 120.0, 1));         // пересекается с P2
+    QCOMPARE(w.scenario().trains()[0].coord, 300.0);
+
+    // Перетаскивание мышью: 1 м = 1 пиксель, голова P1 (координата 300) в центре окна
+    w.map()->viewAt(QPointF(0.0, 300.0), 1.0);
+    QTest::qWait(20);
+    const QPoint c(w.map()->width() / 2, w.map()->height() / 2);
+
+    // Состав занимает 50 м позади головы: цепляемся за точку 10 м позади
+    bool moved = false;
+
+    auto send = [&](QEvent::Type type, const QPoint &pos, Qt::MouseButton btn, Qt::MouseButtons btns)
+    {
+        QMouseEvent ev(type, QPointF(pos), QPointF(w.map()->mapToGlobal(pos)), btn, btns, Qt::NoModifier);
+        QApplication::sendEvent(w.map(), &ev);
+    };
+
+    // карта открыта с поворотом на 90°: ось пути лежит горизонтально, рост координаты - вправо;
+    // точка 10 м позади головы (мир 290) - левее центра
+    const QPoint from = c + QPoint(-10, 0);
+    send(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+    send(QEvent::MouseMove, from + QPoint(-40, 0), Qt::NoButton, Qt::LeftButton);
+    send(QEvent::MouseMove, from + QPoint(-80, 0), Qt::NoButton, Qt::LeftButton);
+    send(QEvent::MouseButtonRelease, from + QPoint(-80, 0), Qt::LeftButton, Qt::NoButton);
+    moved = qAbs(w.scenario().trains()[0].coord - 300.0) > 20.0;
+
+    QVERIFY(moved);
+    QCOMPARE(w.scenario().trains()[0].trajectory, QString("T"));
+    QVERIFY(w.scenario().trains()[0].coord > 150.0);   // не наехал на P2
+
+    // Диалог положения: перенос на другой путь через список путей
+    {
+        PlaceTrainDialog dlg(w.route(), w.scenario(), w.scenario().trains()[0], 0);
+        QCOMPARE(dlg.waypointBox()->count(), 1 + w.route().waypoints().size());
+        dlg.trajectoryBox()->setEditText("S");
+        QCOMPARE(dlg.coordBox()->maximum(), w.route().find("S")->length);
+        QCOMPARE(dlg.result().trajectory, QString("S"));
+        dlg.trajectoryBox()->setEditText("T");
+        QCOMPARE(dlg.result().trajectory, QString("T"));
+        QVERIFY(dlg.okButton()->isEnabled());
+    }
+
 }
 
 QTEST_MAIN(TestConsist)

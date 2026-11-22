@@ -278,8 +278,8 @@ int suggestStartTime(const Scenario &scenario)
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-bool saveProject(const QString &path, const ProjectInfo &info, const Scenario &scenario,
-                 QString *error)
+static QJsonObject buildProject(const QString &path, const ProjectInfo &info,
+                                const Scenario &scenario)
 {
     QJsonObject root;
 
@@ -344,6 +344,24 @@ bool saveProject(const QString &path, const ProjectInfo &info, const Scenario &s
     }
 
     root["trains"] = trains;
+
+    return root;
+}
+
+QByteArray projectSnapshot(const ProjectInfo &info, const Scenario &scenario)
+{
+    ProjectInfo copy = info;
+
+    copy.routeDir.clear();
+    copy.gameRoot.clear();
+
+    return QJsonDocument(buildProject(QString(), copy, scenario)).toJson(QJsonDocument::Compact);
+}
+
+bool saveProject(const QString &path, const ProjectInfo &info, const Scenario &scenario,
+                 QString *error)
+{
+    const QJsonObject root = buildProject(path, info, scenario);
 
     QSaveFile f(path);
 

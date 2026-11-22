@@ -6,6 +6,7 @@
 #include    "scenario/scenario.h"
 
 class QCheckBox;
+class QComboBox;
 class QDialogButtonBox;
 class QDoubleSpinBox;
 class QLabel;
@@ -50,6 +51,16 @@ public:
     /// Текст предупреждений (для проверок)
     QString warningsText() const;
 
+    QComboBox *trajectoryBox() const
+    {
+        return traj_box_;
+    }
+
+    QComboBox *waypointBox() const
+    {
+        return waypoint_box_;
+    }
+
     QDoubleSpinBox *coordBox() const
     {
         return coord_box_;
@@ -69,6 +80,8 @@ private slots:
 
     void onFlip();
     void refresh();
+    void onTrajectoryEdited(const QString &text);
+    void onWaypointChosen(int index);
 
 private:
 
@@ -77,6 +90,8 @@ private:
     PlacedTrain train_;
     int ignore_index_ = -1;
 
+    QComboBox *traj_box_ = nullptr;
+    QComboBox *waypoint_box_ = nullptr;
     QLabel *direction_label_ = nullptr;
     QLabel *warnings_label_ = nullptr;
     QLineEdit *name_edit_ = nullptr;
