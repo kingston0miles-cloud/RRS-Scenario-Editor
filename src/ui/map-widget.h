@@ -1,0 +1,152 @@
+#ifndef     RSE_MAP_WIDGET_H
+#define     RSE_MAP_WIDGET_H
+
+#include    <QWidget>
+#include    <QTransform>
+
+#include    "route/route.h"
+#include    "scenario/pathfinder.h"
+#include    "scenario/scenario.h"
+
+namespace rse
+{
+
+//------------------------------------------------------------------------------
+// Схема путей маршрута: масштаб колесом, перемещение левой кнопкой,
+// стрелки показывают направление "1" (от начала траектории к концу)
+//------------------------------------------------------------------------------
+class MapWidget : public QWidget
+{
+    Q_OBJECT
+
+public:
+
+    explicit MapWidget(QWidget *parent = nullptr);
+
+    /// Задать маршрут (виджет им не владеет) и подогнать вид
+    void setRoute(const Route *route);
+
+    /// Расставленные поезда (виджет ими не владеет)
+    void setScenario(const Scenario *scenario);
+
+    /// Режим расстановки: состав-заготовка следует за курсором призраком, левый щелчок
+    /// по пути даёт сигнал trackClicked. nullptr - режим выключен
+    void setPlacementTemplate(const PlacedTrain *train);
+
+    /// Режим выбора точки: курсор-прицел, левый щелчок по пути даёт trackClicked
+    void setPickMode(bool pick);
+
+    bool pickMode() const
+    {
+        return pick_;
+    }
+
+    /// Подсветить путь поезда по расписанию и его станции (пустой путь - убрать)
+    void setTripOverlay(const QVector<PathSegment> &path, const QVector<TimetableStation> &stations);
+
+    bool placementActive() const
+    {
+        return placement_ != nullptr;
+    }
+
+    /// Выделить поезд (индекс в сценарии, -1 - нет)
+    void setSelectedTrain(int index);
+
+    /// Вывести на экран точку траектории
+    void centerOn(const QString &trajectory, double coord);
+
+    bool showNames() const
+    {
+        return show_names_;
+    }
+
+    bool showArrows() const
+    {
+        return show_arrows_;
+    }
+
+    bool showSwitches() const
+    {
+        return show_switches_;
+    }
+
+public slots:
+
+    /// Показать весь маршрут целиком
+    void fitAll();
+
+    /// Повернуть вид на 90 градусов по часовой стрелке
+    void rotateView();
+
+    /// Поместить точку плана в центр виджета с заданным масштабом (пикселей на метр)
+    void viewAt(const QPointF &center, double scale);
+
+    void setShowNames(bool show);
+    void setShowArrows(bool show);
+    void setShowSwitches(bool show);
+
+signals:
+
+    /// Левый щелчок (без перетаскивания) по пути в режиме расстановки
+    void trackClicked(const rse::Route::Hit &hit);
+
+    /// Курсор над траекторией (hit.valid) или ушёл с неё
+    void hoverChanged(const rse::Route::Hit &hit);
+
+    /// Имя траектории скопировано в буфер обмена (правая кнопка)
+    void trajectoryCopied(const QString &text);
+
+protected:
+
+    void paintEvent(QPaintEvent *event) override;
+    void wheelEvent(QWheelEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+    void leaveEvent(QEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
+
+private:
+
+    const Route *route_ = nullptr;
+    const Scenario *scenario_ = nullptr;
+    const PlacedTrain *placement_ = nullptr;
+    int selected_train_ = -1;
+    bool pick_ = false;
+    QVector<PathSegment> trip_path_;
+    QVector<TimetableStation> trip_stations_;
+
+    /// Масштаб: пикселей на метр
+    double scale_ = 1.0;
+
+    /// Точка плана в центре виджета
+    QPointF center_;
+
+    /// Число поворотов вида на 90 градусов по часовой стрелке (0..3)
+    int rotation_ = 0;
+
+    bool show_names_ = true;
+    bool show_arrows_ = true;
+    bool show_switches_ = true;
+
+    bool dragging_ = false;
+    bool moved_ = false;
+    QPoint last_pos_;
+    QPoint press_pos_;
+
+    Route::Hit hover_;
+
+    QTransform worldToScreen() const;
+
+    void updateHover(const QPoint &pos);
+
+    /// Стрелки вдоль полилинии; neutral - вместо стрелок точки (направление неизвестно)
+    void drawArrows(QPainter &p, const QPolygonF &poly, bool neutral = false) const;
+
+    void drawFootprint(QPainter &p, const QTransform &t, const Footprint &fp,
+                       const QColor &color, const QString &label, int dir, bool ghost) const;
+};
+
+} // namespace rse
+
+#endif // RSE_MAP_WIDGET_H
