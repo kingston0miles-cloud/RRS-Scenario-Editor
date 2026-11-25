@@ -750,7 +750,17 @@ ImportResult importLua(const Route &route, const VehicleCatalog &catalog, const 
 
     ImportResult res;
 
-    const Lexed L = lex(lua_text);
+    // Триггеры, созданные самим редактором по графикам, не часть сценария пользователя
+    QString text = lua_text;
+    const int a = text.indexOf(QStringLiteral("-- [rse-auto begin]"));
+    const int b = text.indexOf(QStringLiteral("-- [rse-auto end]"));
+
+    if (a >= 0 && b > a)
+    {
+        text.remove(a, b + QStringLiteral("-- [rse-auto end]").size() - a);
+    }
+
+    const Lexed L = lex(text);
 
     if (!L.ok)
     {

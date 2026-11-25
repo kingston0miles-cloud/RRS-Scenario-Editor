@@ -1,9 +1,15 @@
 #include    "scenario/export.h"
+#include    "scenario/stationroute.h"
+#include    "scenario/autotriggers.h"
 
+#include    "scenario/checker.h"
 #include    "scenario/consist.h"
+#include    "scenario/formation.h"
 #include    "scenario/pathfinder.h"
 #include    "scenario/trip.h"
 
+#include    <QCryptographicHash>
+#include    <QDateTime>
 #include    <QDir>
 #include    <QFile>
 #include    <QFileInfo>
@@ -99,6 +105,13 @@ bool hasBadChars(const QString &s)
     return false;
 }
 
+/// Имя резервной копии main.lua: одна копия на экспорт (метка времени в имени)
+QString mainBackupName()
+{
+    return QStringLiteral("main.lua.bak-%1")
+        .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss")));
+}
+
 } // namespace
 
 //------------------------------------------------------------------------------
@@ -127,10 +140,83 @@ void timetableApproachRemoval(const Route &route, const PlacedTrain &train,
         return;
     }
 
-    const PathResult path = findPath(route, train.trajectory, train.coord, train.dir,
-                                     tt.endTrajectory, tt.endCoord);
+    // Путь строится по выбранным путям станций, отрезок за отрезком
+    QVector<PathStep> steps;
+    QString traj = train.trajectory;
+    double coord = train.coord;
+    int dir = train.dir;
+    bool ok = true;
 
-    int from_seg = 0;
+    for (const TimetableStation &st : tt.stations)
+    {
+        const PathResult leg = findPath(route, traj, coord, dir, st.targetTrajectory, st.targetCoord);
+
+        if (!leg.found || leg.segments.isEmpty())
+        {
+            ok = false;
+            break;
+        }
+
+        for (const PathStep &p : stepsOf(route, leg))
+        {
+            if (steps.isEmpty() || steps.last().trajectory != p.trajectory)
+            {
+                steps.push_back(p);
+            }
+        }
+
+        traj = st.targetTrajectory;
+        coord = st.targetCoord;
+        dir = leg.segments.last().dir;
+    }
+
+    const QVector<StationZone> zones = steps.isEmpty() ? QVector<StationZone>() : detectZones(route, steps);
+
+    // Зона каждой станции графика: станции между ними, которых в графике нет, не получат
+    // своих маршрутов (автопилот строит их только по полям графика), поэтому уход
+    // станции продлевается до подхода следующей - длинный маршрут откроет и их светофоры
+    QVector<int> zone_of(tt.stations.size(), -1);
+    QVector<int> target_at(tt.stations.size(), -1);
+
+    {
+        int from = 0;
+
+        for (int k = 0; k < tt.stations.size(); ++k)
+        {
+            for (int j = from; j < steps.size(); ++j)
+            {
+                if (steps[j].trajectory == tt.stations[k].targetTrajectory)
+                {
+                    target_at[k] = j;
+                    from = j;
+                    break;
+                }
+            }
+
+            // станция - последняя зона, чей входной светофор остался позади пути станции
+            for (int zi = 0; zi < zones.size() && target_at[k] >= 0; ++zi)
+            {
+                if (zones[zi].enterStep <= target_at[k] && target_at[k] - zones[zi].enterStep <= 40)
+                {
+                    zone_of[k] = zi;
+                }
+            }
+        }
+    }
+
+    // Первый выходной светофор от пути станции: уход - следующая траектория за ним
+    auto removal_after = [&](int t) -> QString
+    {
+        for (int j = t; j < steps.size() && j <= t + 40; ++j)
+        {
+            if (signalAtEnd(route, steps[j].trajectory, steps[j].dir).role == SignalRole::Exit)
+            {
+                return (j + 1 < steps.size()) ? steps[j + 1].trajectory : QString();
+            }
+        }
+
+        return QString();
+    };
 
     for (int k = 0; k < tt.stations.size(); ++k)
     {
@@ -138,27 +224,66 @@ void timetableApproachRemoval(const Route &route, const PlacedTrain &train,
         QString app;
         QString rem;
 
-        if (path.found)
+        if (target_at[k] >= 0)
         {
-            for (int i = from_seg; i < path.segments.size(); ++i)
+            rem = removal_after(target_at[k]);
+        }
+
+        if (zone_of[k] >= 0 && zones[zone_of[k]].approachStep >= 0)
+        {
+            app = steps[zones[zone_of[k]].approachStep].trajectory;
+        }
+
+        // Между этой станцией и следующей есть станции вне графика: уход - подход следующей
+        if (k + 1 < tt.stations.size() && zone_of[k] >= 0 && zone_of[k + 1] > zone_of[k] + 1)
+        {
+            bool unlisted_signals = false;
+
+            for (int zi = zone_of[k] + 1; zi < zone_of[k + 1]; ++zi)
             {
-                const PathSegment &seg = path.segments[i];
-                const double lo = std::min(seg.from, seg.to) - 0.5;
-                const double hi = std::max(seg.from, seg.to) + 0.5;
+                unlisted_signals = unlisted_signals || zones[zi].signalled();
+            }
 
-                if (seg.trajectory == st.targetTrajectory && st.targetCoord >= lo && st.targetCoord <= hi)
+            const int next_app = zones[zone_of[k + 1]].approachStep;
+
+            if (unlisted_signals && next_app >= 0)
+            {
+                rem = steps[next_app].trajectory;
+            }
+        }
+
+        // Между уходом и подходом следующей станции на перегоне стрелки: их переводит только
+        // маршрут, поэтому уход продлевается до подхода следующей станции
+        if (k + 1 < tt.stations.size() && !rem.isEmpty() && zone_of[k + 1] >= 0
+            && zones[zone_of[k + 1]].approachStep >= 0)
+        {
+            const int next_app = zones[zone_of[k + 1]].approachStep;
+            int r_idx = -1;
+
+            for (int j = std::max(0, target_at[k]); j < steps.size() && j <= next_app; ++j)
+            {
+                if (steps[j].trajectory == rem)
                 {
-                    if (i > 0)
-                    {
-                        app = path.segments[i - 1].trajectory;
-                    }
+                    r_idx = j;
+                    break;
+                }
+            }
 
-                    if (i + 1 < path.segments.size())
-                    {
-                        rem = path.segments[i + 1].trajectory;
-                    }
+            if (r_idx >= 0 && r_idx < next_app && haulHasSwitches(route, steps, r_idx, next_app))
+            {
+                rem = steps[next_app].trajectory;
+            }
+        }
 
-                    from_seg = i;
+        // Траектории без станционных имён (учебные маршруты): соседи пути станции
+        if (app.isEmpty() && rem.isEmpty())
+        {
+            for (int j = 0; j < steps.size(); ++j)
+            {
+                if (steps[j].trajectory == st.targetTrajectory)
+                {
+                    app = (j > 0) ? steps[j - 1].trajectory : QString();
+                    rem = (j + 1 < steps.size()) ? steps[j + 1].trajectory : QString();
                     break;
                 }
             }
@@ -295,10 +420,110 @@ ExportPlan planExport(const Route &route, const VehicleCatalog &catalog, const S
         return plan;
     }
 
+    // Защита ручных правок main.lua: проект помнит хеш того, что записал сам,
+    // и предупреждает, если файл с тех пор менялся (этап 19, аудит 4.4)
+    if (options.overwrite && isValidScenarioName(info.scenarioName))
+    {
+        const QString main_path = QDir(plan.scenarioDir).filePath(QStringLiteral("main.lua"));
+        QFile mf(main_path);
+
+        if (mf.open(QIODevice::ReadOnly))
+        {
+            const QByteArray data = mf.readAll();
+            plan.mainBackupName = mainBackupName();
+            plan.existingMainSha256 =
+                QString::fromLatin1(QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex());
+
+            if (!info.exportedMainSha256.isEmpty() && info.exportedMainSha256 != plan.existingMainSha256)
+            {
+                plan.mainEdited = true;
+                plan.warnings << QObject::tr("В main.lua есть правки после прошлого экспорта - при "
+                                             "записи они будут потеряны, предыдущая версия "
+                                             "сохранится в %1.").arg(plan.mainBackupName);
+            }
+            else if (info.exportedMainSha256.isEmpty())
+            {
+                plan.warnings << QObject::tr("Файл main.lua уже есть, а состояние последнего "
+                                             "экспорта проекту неизвестно: при записи он будет "
+                                             "заменён, предыдущая версия сохранится в %1.")
+                                    .arg(plan.mainBackupName);
+            }
+        }
+    }
+
     QStringList used_names;
     QStringList used_configs;
 
+    // Продолжения: проверки и событие переименования
     for (int i = 0; i < scenario.size(); ++i)
+    {
+        const PlacedTrain &c = scenario.trains()[i];
+
+        if (!c.isContinuation())
+        {
+            continue;
+        }
+
+        const QString who = QObject::tr("Сцепка «%1»").arg(c.name);
+
+        if (c.name.trimmed().isEmpty() || hasBadChars(c.name)
+            || QRegularExpression(QStringLiteral("[\\\\/:*?\"<>|]")).match(c.name).hasMatch())
+        {
+            plan.errors << QObject::tr("%1: недопустимое имя.").arg(who);
+        }
+
+        for (int k = 0; k < scenario.size(); ++k)
+        {
+            if (k != i && scenario.trains()[k].name == c.name)
+            {
+                plan.errors << QObject::tr("%1: имя повторяется - по нему называется файл расписания.").arg(who);
+                break;
+            }
+        }
+
+        const FormationPlan fp = planFormation(route, scenario, c);
+
+        if (!fp.ok)
+        {
+            plan.errors << QStringLiteral("%1: %2").arg(who, fp.error);
+            continue;
+        }
+
+        for (const QString &w : fp.warnings)
+        {
+            plan.errors << QStringLiteral("%1: %2").arg(who, w);
+        }
+
+        if (!c.timetable.valid)
+        {
+            plan.warnings << QObject::tr("%1: нет графика - после сцепки поезд будет стоять.").arg(who);
+        }
+        else if (c.timetable.startTime < fp.readyTime)
+        {
+            plan.errors << QObject::tr("%1: отправление в %2 раньше, чем сцепка завершится (%3).")
+                               .arg(who, clockText(c.timetable.startTime).left(5), clockText(fp.readyTime).left(5));
+        }
+
+        ScenarioEvent ev;
+        ev.title = QObject::tr("Сцепка: «%1» становится «%2»").arg(c.formedFrom, c.name);
+        ev.trigger = TriggerType::AtTime;
+        ev.time = fp.readyTime;
+
+        EventAction rename;
+        rename.type = ActionType::RenameTrain;
+        rename.a = c.formedFrom;
+        rename.b = c.name;
+        ev.actions.push_back(rename);
+
+        EventAction rev;
+        rev.type = ActionType::ReverseTrain;
+        rev.a = c.name;
+        ev.actions.push_back(rev);
+
+        plan.formationEvents.push_back(ev);
+    }
+
+    for (const int i : exportOrder(scenario))
     {
         const PlacedTrain &t = scenario.trains()[i];
 
@@ -506,6 +731,41 @@ ExportPlan planExport(const Route &route, const VehicleCatalog &catalog, const S
         }
     }
 
+    // Расписания друг с другом: пересечения и заторы (формирование проверено выше)
+    {
+        CheckOptions copt;
+        copt.startTime = plan.startTime;
+
+        for (const ScheduleIssue &is : checkSchedules(route, scenario, copt))
+        {
+            if (is.severity == IssueSeverity::Info || is.kind == QLatin1String("formation")
+                || is.kind == QLatin1String("no-bot") || is.kind == QLatin1String("before-start"))
+            {
+                continue;
+            }
+
+            plan.warnings << QObject::tr("Проверка графиков: %1").arg(is.text);
+        }
+    }
+
+    if (options.autoTriggers)
+    {
+        AutoTriggerOptions ato;
+        ato.startTime = plan.startTime;
+        ato.forBots = true;
+
+        const AutoTriggerPlan at = planAutoTriggers(route, scenario, ato);
+
+        plan.autoEvents = at.events;
+        plan.clearApproach = at.clearApproach;
+        plan.clearRemoval = at.clearRemoval;
+
+        for (const QString &w : at.warnings)
+        {
+            plan.warnings << QObject::tr("Маршруты: %1").arg(w);
+        }
+    }
+
     plan.files << QStringLiteral("main.lua") << QStringLiteral("README.md");
 
     for (const PlacedTrain &t : scenario.trains())
@@ -525,6 +785,39 @@ ExportPlan planExport(const Route &route, const VehicleCatalog &catalog, const S
     }
 
     return plan;
+}
+
+//------------------------------------------------------------------------------
+// Разложить предупреждения по важности: что остановит поезд, где возможны
+// заторы, остальное (этап 19, аудит 4.3)
+//------------------------------------------------------------------------------
+ExportWarningGroups groupExportWarnings(const QStringList &warnings)
+{
+    static const QStringList stop_keys = {
+        QStringLiteral("не откроется"), QStringLiteral("не строится"),
+        QStringLiteral("проехать нельзя"), QStringLiteral("нет графика"),
+        QStringLiteral("будет стоять"), QStringLiteral("бот выключен"),
+        QStringLiteral("автоведение не заработает"),
+        QStringLiteral("маршрута нет"), QStringLiteral("не содержит станционных светофоров"),
+        QStringLiteral("будут потеряны") };
+    static const QStringList jam_keys = {
+        QStringLiteral("Проверка графиков"), QStringLiteral("одновременно"),
+        QStringLiteral("будет ждать"), QStringLiteral("затор"), QStringLiteral("Маршруты:") };
+
+    ExportWarningGroups g;
+
+    for (const QString &w : warnings)
+    {
+        bool is_stop = false;
+        bool is_jam = false;
+
+        for (const QString &k : stop_keys) is_stop = is_stop || w.contains(k);
+        for (const QString &k : jam_keys) is_jam = is_jam || w.contains(k);
+
+        (is_stop ? g.stop : (is_jam ? g.jam : g.info)) << w;
+    }
+
+    return g;
 }
 
 //------------------------------------------------------------------------------
@@ -563,7 +856,18 @@ QString luaMain(const Scenario &scenario, const ExportPlan &plan, const ProjectI
         s += QStringLiteral("\nsetTrain(%1)\n").arg(et.luaVar);
     }
 
-    s += luaEvents(info.events);
+    const QVector<ScenarioEvent> own = info.events + plan.formationEvents;
+
+    s += luaEvents(own);
+
+    // Триггеры по графикам редактор создаёт заново при каждом экспорте, а при импорте
+    // отбрасывает: они заключены в маркеры
+    if (!plan.autoEvents.isEmpty())
+    {
+        s += QStringLiteral("\n-- [rse-auto begin] триггеры по графикам, создаются редактором\n");
+        s += luaEvents(plan.autoEvents, own.size());
+        s += QStringLiteral("-- [rse-auto end]\n");
+    }
 
     for (const QString &block : info.opaquePost)
     {
@@ -591,11 +895,13 @@ QString readmeText(const Scenario &scenario, const ExportPlan &plan, const Proje
     s += QStringLiteral("Маршрут: %1. Начало игры: %2.\n\n")
          .arg(route.title(), clockText(plan.startTime, false));
 
-    if (!info.events.isEmpty())
+    const QVector<ScenarioEvent> all_events = info.events + plan.formationEvents + plan.autoEvents;
+
+    if (!all_events.isEmpty())
     {
         s += QStringLiteral("### События\n\n");
 
-        for (const ScenarioEvent &e : info.events)
+        for (const ScenarioEvent &e : all_events)
         {
             s += QStringLiteral("- %1 — %2\n").arg(triggerText(e), e.title);
 
@@ -632,6 +938,29 @@ QString readmeText(const Scenario &scenario, const ExportPlan &plan, const Proje
 
                 s += QLatin1Char('\n');
             }
+        }
+    }
+
+    for (const PlacedTrain &c : scenario.trains())
+    {
+        if (!c.isContinuation())
+        {
+            continue;
+        }
+
+        s += QStringLiteral("- **%1** — поезд после сцепки: после прибытия «%2» к вагонам «%3» и сцепки\n")
+             .arg(c.name, c.formedFrom, c.formedWagons);
+
+        for (const TimetableStation &st : c.timetable.stations)
+        {
+            s += QStringLiteral("  - %1: %2").arg(st.name, clockText(st.arrival, false));
+
+            if (st.stops())
+            {
+                s += QStringLiteral(" – %1").arg(clockText(st.departure, false));
+            }
+
+            s += QLatin1Char('\n');
         }
     }
 
@@ -701,11 +1030,38 @@ bool writeExport(const Route &route, const VehicleCatalog &catalog, const Scenar
 
     const QDir dir(plan.scenarioDir);
 
-    if (!write(dir.filePath(QStringLiteral("main.lua")), luaMain(scenario, plan, options.info).toUtf8())
-        || !write(dir.filePath(QStringLiteral("README.md")),
-                  readmeText(scenario, plan, options.info, route).toUtf8()))
+    // Резервная копия предыдущей версии main.lua (этап 19, аудит 4.4): если файл есть
+    // и его содержимое отличается от нового, прежняя версия сохраняется рядом
     {
-        return false;
+        const QString main_path = dir.filePath(QStringLiteral("main.lua"));
+        const QByteArray main_data = luaMain(scenario, plan, options.info).toUtf8();
+
+        QFile old(main_path);
+        QByteArray old_data;
+
+        if (old.open(QIODevice::ReadOnly))
+        {
+            old_data = old.readAll();
+
+            if (old_data != main_data)
+            {
+                const QString name = plan.mainBackupName.isEmpty() ? mainBackupName()
+                                                                   : plan.mainBackupName;
+
+                if (!QFile::copy(main_path, dir.filePath(name)))
+                {
+                    return fail(QObject::tr("Не удалось сохранить резервную копию %1: %2")
+                                    .arg(name, old.errorString()));
+                }
+            }
+        }
+
+        if (!write(main_path, main_data)
+            || !write(dir.filePath(QStringLiteral("README.md")),
+                      readmeText(scenario, plan, options.info, route).toUtf8()))
+        {
+            return false;
+        }
     }
 
     for (const PlacedTrain &t : scenario.trains())
@@ -719,6 +1075,23 @@ bool writeExport(const Route &route, const VehicleCatalog &catalog, const Scenar
         QStringList removal;
 
         timetableApproachRemoval(route, t, &approach, &removal);
+
+        // Где маршрут строит триггер очерёдности, автопилот его строить не должен
+        for (int k = 0; k < t.timetable.stations.size(); ++k)
+        {
+            const QString &appr = t.timetable.stations[k].approachTrajectory;
+            const QString &rem = t.timetable.stations[k].removalTrajectory;
+
+            if (plan.clearApproach.value(t.name).value(k) && appr.isEmpty() && k < approach.size())
+            {
+                approach[k].clear();
+            }
+
+            if (plan.clearRemoval.value(t.name).value(k) && rem.isEmpty() && k < removal.size())
+            {
+                removal[k].clear();
+            }
+        }
 
         if (!write(dir.filePath(QStringLiteral("timetable/%1.xml").arg(t.name)),
                    timetableXml(t, approach, removal)))

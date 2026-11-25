@@ -4,13 +4,16 @@
 
 #include    <QCheckBox>
 #include    <QFormLayout>
+#include    <QHash>
 #include    <QHBoxLayout>
+#include    <QHeaderView>
 #include    <QLabel>
 #include    <QLineEdit>
 #include    <QPlainTextEdit>
 #include    <QPushButton>
 #include    <QTime>
 #include    <QTimeEdit>
+#include    <QTreeWidget>
 #include    <QVBoxLayout>
 
 namespace rse
@@ -60,7 +63,27 @@ ExportDialog::ExportDialog(const Route &route, const VehicleCatalog &catalog,
     overwrite_ = new QCheckBox(tr("Заменить существующий сценарий с таким именем"), this);
     form->addRow(QString(), overwrite_);
 
+    triggers_ = new QCheckBox(tr("Триггеры маршрутов по графикам с очерёдностью по категории поезда"), this);
+    triggers_->setChecked(true);
+    triggers_->setToolTip(tr("Светофоры и стрелки переключаются под расписание; пассажирские "
+                             "получают маршруты раньше грузовых, скорые - раньше обычных"));
+    form->addRow(QString(), triggers_);
+
+    // Ссылка на просмотр того, что именно уйдёт в main.lua (этап 19, аудит 4.2)
+    auto_link_ = new QLabel(this);
+    auto_link_->setTextFormat(Qt::RichText);
+    auto_link_->setText(tr("<a href=\"#auto\">показать, какие события будут созданы</a>"));
+    auto_link_->hide();
+    form->addRow(QString(), auto_link_);
+
     layout->addLayout(form);
+
+    auto_tree_ = new QTreeWidget(this);
+    auto_tree_->setHeaderLabels({ tr("Поезд / событие"), tr("Когда") });
+    auto_tree_->setColumnWidth(0, 460);
+    auto_tree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    auto_tree_->hide();
+    layout->addWidget(auto_tree_);
 
     preview_ = new QPlainTextEdit(this);
     preview_->setReadOnly(true);
@@ -85,6 +108,12 @@ ExportDialog::ExportDialog(const Route &route, const VehicleCatalog &catalog,
         update();
     });
     connect(overwrite_, &QCheckBox::toggled, this, &ExportDialog::update);
+    connect(triggers_, &QCheckBox::toggled, this, &ExportDialog::update);
+    connect(auto_link_, &QLabel::linkActivated, this, [this]
+    {
+        auto_details_ = !auto_details_;
+        update();
+    });
 
     update();
 }
@@ -101,6 +130,7 @@ ExportOptions ExportDialog::options() const
     o.info.description = description_->toPlainText();
     o.info.startTime = auto_start_->isChecked() ? -1 : QTime(0, 0).secsTo(start_edit_->time());
     o.overwrite = overwrite_->isChecked();
+    o.autoTriggers = triggers_->isChecked();
 
     return o;
 }
@@ -127,22 +157,51 @@ void ExportDialog::update()
         text += QLatin1Char('\n');
     }
 
-    if (!plan.warnings.isEmpty())
+    // Замечания по важности: что остановит поезд, где возможны заторы, остальное
     {
-        text += tr("Замечания:\n");
+        const ExportWarningGroups g = groupExportWarnings(plan.warnings);
 
-        for (const QString &w : plan.warnings)
+        auto group = [&text](const QString &title, const QStringList &items, const QString &mark)
         {
-            text += QStringLiteral("  ! ") + w + QLatin1Char('\n');
-        }
+            if (items.isEmpty())
+            {
+                return;
+            }
 
-        text += QLatin1Char('\n');
+            text += title + QStringLiteral(" (%1):\n").arg(items.size());
+
+            for (const QString &w : items)
+            {
+                text += QStringLiteral("  %1 ").arg(mark) + w + QLatin1Char('\n');
+            }
+
+            text += QLatin1Char('\n');
+        };
+
+        group(tr("Поезд может не поехать"), g.stop, QStringLiteral("⚠"));
+        group(tr("Возможные заторы и ожидания"), g.jam, QStringLiteral("△"));
+        group(tr("Для сведения"), g.info, QStringLiteral("•"));
+
+        if (plan.errors.isEmpty() && plan.warnings.isEmpty())
+        {
+            text += tr("✓ Всё на месте: замечаний нет.\n\n");
+        }
     }
 
     if (!plan.scenarioDir.isEmpty())
     {
-        text += tr("Каталог: %1\nНачало игры: %2\n\nБудет записано:\n")
-                .arg(plan.scenarioDir, formatClock(plan.startTime).left(5));
+        int timetables = 0;
+
+        for (const QString &f : plan.files)
+        {
+            timetables += f.startsWith(QLatin1String("timetable/")) ? 1 : 0;
+        }
+
+        text += tr("Каталог: %1\nНачало игры: %2\n\nБудет записано: поездов %3, графиков %4, "
+                   "событий по графикам %5, событий пользователя %6.\n\nФайлы:\n")
+                .arg(plan.scenarioDir, formatClock(plan.startTime).left(5))
+                .arg(plan.trains.size()).arg(timetables).arg(plan.autoEvents.size())
+                .arg(info_.events.size());
 
         for (const QString &f : plan.files)
         {
@@ -150,8 +209,48 @@ void ExportDialog::update()
         }
     }
 
+    triggers_->setText(triggers_->isChecked() && !plan.autoEvents.isEmpty()
+        ? tr("Триггеры маршрутов по графикам (будет создано событий: %1)").arg(plan.autoEvents.size())
+        : tr("Триггеры маршрутов по графикам с очерёдностью по категории поезда"));
+
+    // Просмотр того, что именно будет создано по графикам
+    const bool has_auto = triggers_->isChecked() && !plan.autoEvents.isEmpty();
+    auto_link_->setVisible(has_auto);
+    auto_tree_->setVisible(has_auto && auto_details_);
+
+    if (has_auto && auto_details_)
+    {
+        fillAutoTree(plan.autoEvents);
+    }
+
     preview_->setPlainText(text);
     export_button_->setEnabled(plan.ok());
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+void ExportDialog::fillAutoTree(const QVector<ScenarioEvent> &events)
+{
+    auto_tree_->clear();
+
+    QHash<QString, QTreeWidgetItem *> groups;
+
+    for (const ScenarioEvent &e : events)
+    {
+        QTreeWidgetItem *&group = groups[e.owner];
+
+        if (group == nullptr)
+        {
+            group = new QTreeWidgetItem(auto_tree_);
+            group->setText(0, e.owner.isEmpty() ? tr("Прочие") : tr("Поезд «%1»").arg(e.owner));
+            group->setExpanded(true);
+        }
+
+        auto *item = new QTreeWidgetItem(group);
+        item->setText(0, e.title);
+        item->setText(1, triggerText(e));
+    }
 }
 
 //------------------------------------------------------------------------------

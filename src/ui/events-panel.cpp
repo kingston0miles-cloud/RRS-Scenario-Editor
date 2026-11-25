@@ -2,6 +2,7 @@
 
 #include    <QHBoxLayout>
 #include    <QHeaderView>
+#include    <QMessageBox>
 #include    <QPushButton>
 #include    <QTreeWidget>
 #include    <QVBoxLayout>
@@ -43,7 +44,23 @@ EventsPanel::EventsPanel(QWidget *parent)
 
     connect(add_, &QPushButton::clicked, this, &EventsPanel::addRequested);
     connect(edit_, &QPushButton::clicked, this, [this] { emit editRequested(currentIndex()); });
-    connect(remove_, &QPushButton::clicked, this, [this] { emit removeRequested(currentIndex()); });
+    // Разрушающее действие - с подтверждением (аудит 2.6)
+    connect(remove_, &QPushButton::clicked, this, [this]
+    {
+        if (currentIndex() < 0)
+        {
+            return;
+        }
+
+        if (QMessageBox::question(this, tr("Удаление события"),
+                                  tr("Удалить выбранное событие? "
+                                     "(действие можно отменить, Ctrl+Z)")) != QMessageBox::Yes)
+        {
+            return;
+        }
+
+        emit removeRequested(currentIndex());
+    });
     connect(up_, &QPushButton::clicked, this, [this] { emit moveRequested(currentIndex(), -1); });
     connect(down_, &QPushButton::clicked, this, [this] { emit moveRequested(currentIndex(), 1); });
     connect(tree_, &QTreeWidget::itemDoubleClicked, this, [this] { emit editRequested(currentIndex()); });

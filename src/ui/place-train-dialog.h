@@ -51,6 +51,9 @@ public:
     /// Текст предупреждений (для проверок)
     QString warningsText() const;
 
+    /// Пояснение «как поезд поведёт себя в игре» (аудит 2.3)
+    QString gameBehaviourText() const;
+
     QComboBox *trajectoryBox() const
     {
         return traj_box_;
@@ -76,6 +79,12 @@ public:
         return auto_box_;
     }
 
+signals:
+
+    /// «Назначить модуль»: каталог конфигов, для которого назначить модуль
+    /// автопилота (аудит 2.4)
+    void assignModuleRequested(const QString &config_dir);
+
 private slots:
 
     void onFlip();
@@ -94,10 +103,15 @@ private:
     QComboBox *waypoint_box_ = nullptr;
     QLabel *direction_label_ = nullptr;
     QLabel *warnings_label_ = nullptr;
+    QLabel *behaviour_label_ = nullptr;
+    QLabel *assign_label_ = nullptr;
     QLineEdit *name_edit_ = nullptr;
     QDoubleSpinBox *coord_box_ = nullptr;
     QPushButton *flip_button_ = nullptr;
     QCheckBox *auto_box_ = nullptr;
+    QCheckBox *planned_box_ = nullptr;
+    QComboBox *class_box_ = nullptr;
+    QCheckBox *no_auto_box_ = nullptr;
     QDialogButtonBox *buttons_ = nullptr;
 
     PlacedTrain current() const;

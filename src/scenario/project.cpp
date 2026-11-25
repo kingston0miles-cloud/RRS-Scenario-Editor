@@ -76,6 +76,8 @@ QJsonObject timetableToJson(const Timetable &tt)
         so["right"] = s.rightPlatform;
         so["left"] = s.leftPlatform;
         so["visible"] = s.visible;
+        so["m_arr"] = s.manualArrival;
+        so["m_dep"] = s.manualDeparture;
         stations.append(so);
     }
 
@@ -119,6 +121,8 @@ Timetable timetableFromJson(const QJsonObject &o)
         s.rightPlatform = so["right"].toInt(-1);
         s.leftPlatform = so["left"].toInt(-1);
         s.visible = so["visible"].toInt(-1);
+        s.manualArrival = so["m_arr"].toBool();
+        s.manualDeparture = so["m_dep"].toBool();
         tt.stations.push_back(s);
     }
 
@@ -296,6 +300,8 @@ static QJsonObject buildProject(const QString &path, const ProjectInfo &info,
     root["scenario_name"] = info.scenarioName;
     root["description"] = info.description;
     root["start_time"] = info.startTime;
+    root["exported_main_sha256"] = info.exportedMainSha256;
+    root["exported_at"] = info.exportedAt;
 
     QJsonArray events;
 
@@ -325,6 +331,16 @@ static QJsonObject buildProject(const QString &path, const ProjectInfo &info,
         o["coord"] = t.coord;
         o["dir"] = t.dir;
         o["auto"] = t.autoMode;
+        o["planned"] = t.planned;
+        o["train_class"] = t.trainClass;
+        o["no_auto_events"] = t.noAutoEvents;
+
+        if (t.isContinuation())
+        {
+            o["formed_from"] = t.formedFrom;
+            o["formed_wagons"] = t.formedWagons;
+            o["form_delay"] = t.formDelaySec;
+        }
 
         QJsonArray groups;
 
@@ -334,6 +350,20 @@ static QJsonObject buildProject(const QString &path, const ProjectInfo &info,
         }
 
         o["groups"] = groups;
+
+        if (!t.pins.isEmpty())
+        {
+            QJsonArray pins;
+
+            for (const TripPin &p : t.pins)
+            {
+                pins.append(QJsonObject { { "station", p.station },
+                                          { "track", p.track },
+                                          { "coord", p.trackCoord } });
+            }
+
+            o["pins"] = pins;
+        }
 
         if (t.timetable.valid)
         {
@@ -394,13 +424,12 @@ QString projectRouteDir(const QString &path)
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-bool loadProject(const QString &path, ProjectInfo *info, Scenario *scenario, QString *error)
+static bool projectFromJsonObject(const QJsonObject &root, const QString &base_path,
+                                  ProjectInfo *info, Scenario *scenario, QString *error)
 {
-    const QJsonObject root = readFile(path, error);
-
     if (root.isEmpty())
     {
-        return false;
+        return fail(error, QObject::tr("Проект пуст или повреждён."));
     }
 
     if (root["format"].toString() != QLatin1String("rrs-scenario-editor-project"))
@@ -415,17 +444,19 @@ bool loadProject(const QString &path, ProjectInfo *info, Scenario *scenario, QSt
 
     ProjectInfo pi;
 
-    pi.routeDir = resolvePath(path, root["route_dir_rel"].toString(), root["route_dir"].toString());
+    pi.routeDir = resolvePath(base_path, root["route_dir_rel"].toString(), root["route_dir"].toString());
 
     if (pi.routeDir.isEmpty())
     {
         pi.routeDir = root["route_dir"].toString();
     }
 
-    pi.gameRoot = resolvePath(path, root["game_root_rel"].toString(), root["game_root"].toString());
+    pi.gameRoot = resolvePath(base_path, root["game_root_rel"].toString(), root["game_root"].toString());
     pi.scenarioName = root["scenario_name"].toString();
     pi.description = root["description"].toString();
     pi.startTime = root["start_time"].toInt(-1);
+    pi.exportedMainSha256 = root["exported_main_sha256"].toString();
+    pi.exportedAt = static_cast<qint64>(root["exported_at"].toDouble(-1));
 
     for (const QJsonValue &v : root["events"].toArray())
     {
@@ -460,10 +491,27 @@ bool loadProject(const QString &path, ProjectInfo *info, Scenario *scenario, QSt
         t.coord = o["coord"].toDouble();
         t.dir = o["dir"].toInt(1);
         t.autoMode = o["auto"].toBool();
+        t.planned = o["planned"].toBool();
+        t.trainClass = o["train_class"].toInt(0);
+        t.noAutoEvents = o["no_auto_events"].toBool();
+        t.formedFrom = o["formed_from"].toString();
+        t.formedWagons = o["formed_wagons"].toString();
+        t.formDelaySec = o["form_delay"].toInt(120);
 
         for (const QJsonValue &g : o["groups"].toArray())
         {
             t.groups.push_back(groupFromJson(g.toObject()));
+        }
+
+        for (const QJsonValue &p : o["pins"].toArray())
+        {
+            const QJsonObject po = p.toObject();
+            TripPin pin;
+
+            pin.station = po["station"].toString();
+            pin.track = po["track"].toString();
+            pin.trackCoord = po["coord"].toDouble();
+            t.pins.push_back(pin);
         }
 
         if (o.contains("timetable"))
@@ -485,6 +533,36 @@ bool loadProject(const QString &path, ProjectInfo *info, Scenario *scenario, QSt
     }
 
     return true;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+bool loadProjectData(const QByteArray &data, ProjectInfo *info, Scenario *scenario, QString *error)
+{
+    const QJsonDocument doc = QJsonDocument::fromJson(data);
+
+    if (!doc.isObject())
+    {
+        return fail(error, QObject::tr("Снимок проекта повреждён."));
+    }
+
+    return projectFromJsonObject(doc.object(), QString(), info, scenario, error);
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+bool loadProject(const QString &path, ProjectInfo *info, Scenario *scenario, QString *error)
+{
+    const QJsonObject root = readFile(path, error);
+
+    if (root.isEmpty())
+    {
+        return false;
+    }
+
+    return projectFromJsonObject(root, path, info, scenario, error);
 }
 
 } // namespace rse

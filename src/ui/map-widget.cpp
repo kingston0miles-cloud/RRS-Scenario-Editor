@@ -95,6 +95,7 @@ MapWidget::MapWidget(QWidget *parent)
     : QWidget(parent)
 {
     setMouseTracking(true);
+    setFocusPolicy(Qt::StrongFocus);
     setMinimumSize(320, 240);
     setAutoFillBackground(false);
 }
@@ -225,6 +226,15 @@ void MapWidget::setTripOverlay(const QVector<PathSegment> &path,
 {
     trip_path_ = path;
     trip_stations_ = stations;
+    update();
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+void MapWidget::setSignalMarks(const QVector<SignalMark> &marks)
+{
+    signal_marks_ = marks;
     update();
 }
 
@@ -537,6 +547,60 @@ void MapWidget::paintEvent(QPaintEvent *)
         p.setBrush(Qt::NoBrush);
     }
 
+    // Светофоры, которые откроются маршрутами графика: кольцо у стрелки с литерой.
+    // Станционные - цветные, линейные - точкой без подписи; проблемные - красным
+    QVector<QPair<QPointF, QString>> signal_labels;
+
+    if (!signal_marks_.isEmpty())
+    {
+        for (const SignalMark &m : std::as_const(signal_marks_))
+        {
+            const SwitchData *sw = route_->findSwitch(m.sw);
+
+            if (sw == nullptr || !sw->hasPos || !view_world.contains(sw->pos))
+            {
+                continue;
+            }
+
+            const QPointF sp = t.map(sw->pos);
+            const QColor color = m.problem ? QColor(200, 30, 30) : QColor(200, 120, 0);
+
+            p.setPen(QPen(color, 2.2));
+            p.setBrush(m.station ? color : QColor(color.red(), color.green(), color.blue(), 60));
+            p.drawEllipse(sp, 5.0, 5.0);
+
+            // Литера - только у станционных: линейных много, их литеры захламляют карту
+            if (m.station && !m.liter.isEmpty())
+            {
+                signal_labels.push_back({ sp + QPointF(0.0, -11.0), m.liter });
+            }
+        }
+
+        p.setPen(Qt::NoPen);
+        p.setBrush(Qt::NoBrush);
+    }
+
+    // Литеры подсвеченных светофоров - до имён траекторий, чтобы не уступали им место
+    if (!signal_labels.isEmpty())
+    {
+        p.setFont(small_font);
+
+        const QFontMetricsF fm(small_font);
+
+        for (const auto &sl : std::as_const(signal_labels))
+        {
+            const QRectF r = labelRect(fm, sl.first, sl.second);
+
+            if (collides(placed, r))
+            {
+                continue;
+            }
+
+            placed.push_back(r);
+            drawLabelRect(p, r, sl.second, QColor(170, 100, 0));
+        }
+    }
+
     // Имена траекторий: рисуем, если траектория на экране заметно длиннее подписи
     if (show_names_)
     {
@@ -621,6 +685,13 @@ void MapWidget::paintEvent(QPaintEvent *)
         for (int i = 0; i < scenario_->size(); ++i)
         {
             const PlacedTrain &tr = scenario_->trains()[i];
+
+            // продолжение показываем только выбранным: на путях его ещё нет
+            if (tr.isContinuation() && i != selected_train_)
+            {
+                continue;
+            }
+
             const Footprint fp = computeFootprint(*route_, tr.trajectory, tr.coord,
                                                   tr.dir, tr.length);
 
@@ -719,6 +790,91 @@ void MapWidget::paintEvent(QPaintEvent *)
         p.setBrush(Qt::white);
         p.drawEllipse(hp, 4.5, 4.5);
     }
+
+    // Цветная полоса режима с подсказкой «Esc — отмена» (аудит 1.4)
+    const QString mode = mapModeHint();
+
+    if (!mode.isEmpty())
+    {
+        const QColor bar = (placement_ != nullptr) ? QColor(30, 90, 170, 215)
+                                                   : QColor(190, 105, 10, 215);
+
+        const QRect bar_rect(0, 0, width(), 24);
+
+        p.fillRect(bar_rect, bar);
+        p.setPen(Qt::white);
+        p.drawText(bar_rect.adjusted(8, 0, -8, 0), Qt::AlignVCenter | Qt::AlignLeft,
+                   p.fontMetrics().elidedText(mode, Qt::ElideMiddle, bar_rect.width() - 16));
+    }
+}
+
+//------------------------------------------------------------------------------
+// Подсказка текущего режима карты (аудит 1.4)
+//------------------------------------------------------------------------------
+QString MapWidget::mapModeHint() const
+{
+    if (placement_ != nullptr)
+    {
+        return tr("Расстановка: «%1» — кликните по пути. Esc — отмена выбора состава")
+                .arg(placement_->title);
+    }
+
+    if (pick_)
+    {
+        return tr("Выбор точки: кликните по пути. Esc — отмена выбора");
+    }
+
+    return QString();
+}
+
+//------------------------------------------------------------------------------
+// Клавиатура карты (аудит 5.3): стрелки - перемещение, «+»/«-» - масштаб,
+// F - показать весь маршрут, R - поворот
+//------------------------------------------------------------------------------
+void MapWidget::keyPressEvent(QKeyEvent *event)
+{
+    if (route_ == nullptr || !route_->isLoaded())
+    {
+        QWidget::keyPressEvent(event);
+        return;
+    }
+
+    const double pan = 120.0 / std::max(scale_, 1e-9);
+
+    switch (event->key())
+    {
+    case Qt::Key_Left:
+        center_.rx() -= pan;
+        break;
+    case Qt::Key_Right:
+        center_.rx() += pan;
+        break;
+    case Qt::Key_Up:
+        center_.ry() -= pan;
+        break;
+    case Qt::Key_Down:
+        center_.ry() += pan;
+        break;
+    case Qt::Key_Plus:
+    case Qt::Key_Equal:
+        scale_ = std::clamp(scale_ * ZOOM_STEP, MIN_SCALE, MAX_SCALE);
+        break;
+    case Qt::Key_Minus:
+        scale_ = std::clamp(scale_ / ZOOM_STEP, MIN_SCALE, MAX_SCALE);
+        break;
+    case Qt::Key_F:
+        fitAll();
+        return;
+    case Qt::Key_R:
+        rotateView();
+        return;
+    default:
+        QWidget::keyPressEvent(event);
+        return;
+    }
+
+    update();
+    event->accept();
 }
 
 //------------------------------------------------------------------------------
@@ -882,6 +1038,12 @@ int MapWidget::trainAt(const QPoint &pos, int prefer) const
     for (int i = 0; i < scenario_->size(); ++i)
     {
         const PlacedTrain &tr = scenario_->trains()[i];
+
+        if (tr.isContinuation())
+        {
+            continue;
+        }
+
         const Footprint fp = computeFootprint(*route_, tr.trajectory, tr.coord, tr.dir, tr.length);
 
         for (const FootprintSegment &seg : fp.segments)

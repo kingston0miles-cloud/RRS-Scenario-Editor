@@ -56,6 +56,10 @@ add_library(rse-scenario STATIC
     src/scenario/pathfinder.cpp
     src/scenario/dynamics.h
     src/scenario/dynamics.cpp
+    src/scenario/autotriggers.h
+    src/scenario/autotriggers.cpp
+    src/scenario/stationroute.h
+    src/scenario/stationroute.cpp
     src/scenario/trip.h
     src/scenario/trip.cpp
     src/scenario/events.h
@@ -66,6 +70,10 @@ add_library(rse-scenario STATIC
     src/scenario/export.cpp
     src/scenario/importer.h
     src/scenario/importer.cpp
+    src/scenario/formation.h
+    src/scenario/formation.cpp
+    src/scenario/checker.h
+    src/scenario/checker.cpp
 )
 
 target_include_directories(rse-scenario PUBLIC src)
@@ -75,6 +83,10 @@ target_link_libraries(rse-scenario PUBLIC rse-route rse-catalog Qt6::Core)
 # Интерфейс (Qt Widgets)
 #------------------------------------------------------------------------------
 add_library(rse-ui STATIC
+    src/ui/check-dialog.h
+    src/ui/check-dialog.cpp
+    src/ui/continuation-dialog.h
+    src/ui/continuation-dialog.cpp
     src/ui/main-window.h
     src/ui/main-window.cpp
     src/ui/map-widget.h
@@ -86,13 +98,17 @@ add_library(rse-ui STATIC
     src/ui/place-train-dialog.h
     src/ui/place-train-dialog.cpp
     src/ui/trains-panel.h
+    src/ui/workflow-bar.h
     src/ui/trains-panel.cpp
+    src/ui/workflow-bar.cpp
     src/ui/timetable-dialog.h
     src/ui/timetable-dialog.cpp
     src/ui/export-dialog.h
     src/ui/export-dialog.cpp
     src/ui/event-dialog.h
     src/ui/event-dialog.cpp
+    src/ui/auto-events-panel.h
+    src/ui/auto-events-panel.cpp
     src/ui/events-panel.h
     src/ui/events-panel.cpp
 )
@@ -129,6 +145,14 @@ if(RSE_BUILD_TESTS)
     add_executable(test-scenario tests/test-scenario.cpp)
     target_link_libraries(test-scenario PRIVATE rse-scenario Qt6::Test)
     add_test(NAME scenario COMMAND test-scenario)
+
+    add_executable(test-checker tests/test-checker.cpp)
+    target_link_libraries(test-checker PRIVATE rse-scenario Qt6::Test)
+    add_test(NAME checker COMMAND test-checker)
+
+    add_executable(test-stationroute tests/test-stationroute.cpp)
+    target_link_libraries(test-stationroute PRIVATE rse-scenario Qt6::Test)
+    add_test(NAME stationroute COMMAND test-stationroute)
 
     add_executable(test-trip tests/test-trip.cpp)
     target_link_libraries(test-trip PRIVATE rse-scenario Qt6::Test)

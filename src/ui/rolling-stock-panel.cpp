@@ -1,5 +1,6 @@
 #include    "ui/rolling-stock-panel.h"
 
+#include    <QButtonGroup>
 #include    <QHBoxLayout>
 #include    <QHeaderView>
 #include    <QPushButton>
@@ -7,6 +8,7 @@
 #include    <QLabel>
 #include    <QLineEdit>
 #include    <QMenu>
+#include    <QToolButton>
 #include    <QTreeWidget>
 #include    <QVBoxLayout>
 
@@ -76,6 +78,31 @@ RollingStockPanel::RollingStockPanel(QWidget *parent)
     layout->addLayout(top_row);
 
     connect(new_train, &QPushButton::clicked, this, [this] { emit newTrainRequested(QString(), QString()); });
+
+    // Вкладки «Единицы» / «Готовые составы» (аудит 2.7)
+    auto *tabs_row = new QHBoxLayout;
+    auto *units_tab = new QToolButton(this);
+    units_tab->setText(tr("Единицы"));
+    units_tab->setCheckable(true);
+    units_tab->setChecked(true);
+    units_tab->setToolTip(tr("Единицы подвижного состава из cfg/vehicles"));
+
+    auto *trains_tab = new QToolButton(this);
+    trains_tab->setText(tr("Готовые составы"));
+    trains_tab->setCheckable(true);
+    trains_tab->setToolTip(tr("Готовые составы из cfg/trains"));
+
+    auto *tabs_group = new QButtonGroup(this);
+    tabs_group->addButton(units_tab, 0);
+    tabs_group->addButton(trains_tab, 1);
+    tabs_group->setExclusive(true);
+
+    tabs_row->addWidget(units_tab);
+    tabs_row->addWidget(trains_tab);
+    tabs_row->addStretch(1);
+    layout->addLayout(tabs_row);
+
+    connect(tabs_group, &QButtonGroup::idClicked, this, &RollingStockPanel::setActiveTab);
 
     tree_ = new QTreeWidget(this);
     tree_->setColumnCount(ColCount);
@@ -166,6 +193,50 @@ void RollingStockPanel::refresh()
     summary_label_->setText(text);
 
     applyFilter();
+    applyTabFilter();
+}
+
+//------------------------------------------------------------------------------
+// Вкладка списка: скрывать строки другой вкладки (аудит 2.7)
+//------------------------------------------------------------------------------
+void RollingStockPanel::setActiveTab(int tab)
+{
+    tab_ = (tab == 1) ? 1 : 0;
+    applyTabFilter();
+}
+
+//------------------------------------------------------------------------------
+// Скрыть готовые составы (вкладка «Единицы») или единицы (вкладка
+// «Готовые составы»). Корневые группы скрываются целиком, если в их поддереве
+// нет элементов активной вкладки
+//------------------------------------------------------------------------------
+void RollingStockPanel::applyTabFilter()
+{
+    std::function<bool(QTreeWidgetItem *)> has_trains = [&](QTreeWidgetItem *item) -> bool
+    {
+        if (item->data(ColName, ROLE_KIND).toInt() == KindTrain)
+        {
+            return true;
+        }
+
+        for (int i = 0; i < item->childCount(); ++i)
+        {
+            if (has_trains(item->child(i)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    };
+
+    for (int i = 0; i < tree_->topLevelItemCount(); ++i)
+    {
+        QTreeWidgetItem *root = tree_->topLevelItem(i);
+        const bool trains = has_trains(root);
+
+        tree_->setRowHidden(i, QModelIndex(), (tab_ == 1) ? !trains : trains);
+    }
 }
 
 //------------------------------------------------------------------------------
@@ -545,6 +616,23 @@ void RollingStockPanel::onContextMenu(const QPoint &pos)
         return;
     }
 
+    if (chosen == assign)
+    {
+        assignModuleForUnit(config_dir);
+    }
+}
+
+//------------------------------------------------------------------------------
+// Диалог назначения модуля каталогу конфигов (аудит 2.4). Отдельный метод,
+// чтобы открыть его и ссылкой «Назначить модуль» из диалога поезда
+//------------------------------------------------------------------------------
+void RollingStockPanel::assignModuleForUnit(const QString &config_dir)
+{
+    if (catalog_ == nullptr || !catalog_->isLoaded() || config_dir.isEmpty())
+    {
+        return;
+    }
+
     // Формат ввода - как в конфиге состава: «каталог/модуль» или просто «модуль»
     QStringList choices = catalog_->installedModules();
     const QString current = catalog_->manualModules().value(config_dir).id();
@@ -691,6 +779,12 @@ bool RollingStockPanel::selectTrain(const QString &name)
 
             if (it->data(ColName, ROLE_KIND).toInt() == KindTrain && it->text(ColName) == name)
             {
+                // Составы показываются на вкладке «Готовые составы»
+                if (tab_ != 1)
+                {
+                    setActiveTab(1);
+                }
+
                 tree_->setCurrentItem(it);
                 return true;
             }

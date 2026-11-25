@@ -338,14 +338,14 @@ EventCheck checkEvent(const Route &route, const Scenario &scenario, const Scenar
 //------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
-QString luaEvents(const QVector<ScenarioEvent> &events)
+QString luaEvents(const QVector<ScenarioEvent> &events, int first_index)
 {
     QString s;
 
     for (int i = 0; i < events.size(); ++i)
     {
         const ScenarioEvent &e = events[i];
-        const QString id = QStringLiteral("event%1").arg(i + 1);
+        const QString id = QStringLiteral("event%1").arg(first_index + i + 1);
 
         s += QStringLiteral("\n-- %1\n").arg(e.title.isEmpty() ? QObject::tr("Событие %1").arg(i + 1)
                                                                : e.title.simplified());

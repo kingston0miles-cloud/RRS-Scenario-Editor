@@ -13,6 +13,9 @@
 #include    <QTimer>
 
 #include    "ui/main-window.h"
+#include    "ui/check-dialog.h"
+#include    "scenario/checker.h"
+#include    "ui/continuation-dialog.h"
 #include    "ui/place-train-dialog.h"
 #include    "ui/rolling-stock-panel.h"
 #include    "ui/trains-panel.h"
@@ -143,6 +146,7 @@ private slots:
     void mainWindowEventsWithMapPick();
     void mainWindowImportsScenario();
     void dragAndRelocateTrain();
+    void continuationFlow();
     void saveTrainRejectsBadInput();
     void composerDialog();
     void mainWindowComposesAndSavesTrain();
@@ -778,6 +782,144 @@ void TestConsist::mainWindowImportsScenario()
     QVERIFY(lua.contains("tr.name = \"A\""));
     QVERIFY(lua.contains("logMessage(\"x\")"));
     QVERIFY(lua.contains("setTimeTrigger(\"10:05:00\", event1_actions)"));
+}
+
+void TestConsist::continuationFlow()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    buildGame(root.path());
+    buildRoute(root.path() + "/routes/r");
+
+    MainWindow w;
+    QVERIFY(w.openRoute(root.path() + "/routes/r"));
+    auto &sc = const_cast<Scenario &>(w.scenario());
+
+    PlacedTrain wagons = trainFrom(w.catalog(), "poezd", "T", 380.0, 1);
+    wagons.name = "W";
+    sc.add(wagons);
+
+    PlacedTrain loco = trainFrom(w.catalog(), "poezd", "T", 100.0, 1);
+    loco.name = "L";
+    loco.autoMode = true;
+    sc.add(loco);
+
+    auto makeTimetable = [](int from, int to, double c0, double c1, const QString &first, const QString &last)
+    {
+        Timetable tt;
+        tt.valid = true;
+        tt.startTime = from;
+        tt.endTrajectory = "T";
+        tt.endCoord = c1;
+        const int dir = c1 >= c0 ? 1 : -1;
+
+        for (int t = from; t <= to; t += 30)
+        {
+            TimetableSample sm;
+            sm.time = t;
+            sm.trajectory = "T";
+            sm.coord = c0 + (c1 - c0) * double(t - from) / double(to - from);
+            sm.dir = dir;
+            tt.samples.push_back(sm);
+        }
+
+        TimetableStation a;
+        a.name = first;
+        a.arrival = a.departure = from;
+        a.targetTrajectory = "T";
+        a.targetCoord = c0;
+        TimetableStation b;
+        b.name = last;
+        b.arrival = b.departure = to;
+        b.targetTrajectory = "T";
+        b.targetCoord = c1;
+        tt.stations << a << b;
+
+        return tt;
+    };
+
+    const int T0 = 12 * 3600;
+    w.setTimetable(1, makeTimetable(T0, T0 + 300, 100.0, 325.0, "A", "B"));
+
+    // Продолжение через диалог
+    PlacedTrain seed;
+    seed.formedFrom = "L";
+    seed.name = "Out";
+    seed.formedWagons = "W";
+
+    ContinuationDialog dlg(w.route(), w.scenario(), 1, seed, -1);
+    QVERIFY2(dlg.okButton()->isEnabled(), qPrintable(dlg.infoText()));
+    const PlacedTrain cont = dlg.result();
+    QVERIFY(cont.isContinuation());
+    QCOMPARE(cont.dir, -1);
+    QCOMPARE(cont.coord, 275.0);
+    QVERIFY(qAbs(cont.length - 100.0) < 1e-6);
+
+    sc.add(cont);
+    w.setTimetable(2, makeTimetable(T0 + 600, T0 + 900, 275.0, 0.0, "B", "C"));
+    QVERIFY(w.scenario().trains()[2].timetable.valid);
+
+    // Проверка графиков: чисто
+    for (const ScheduleIssue &i : w.checkResult())
+    {
+        QVERIFY2(i.severity == IssueSeverity::Info, qPrintable(i.kind + ": " + i.text));
+    }
+
+    // Окно проверки: чисто; после порчи графика появляются строки
+    {
+        CheckDialog cd([&w] { return w.checkResult(); });
+        QCOMPARE(cd.shownCount(), 0);
+
+        PlacedTrain bad = w.scenario().trains()[2];
+        bad.timetable.startTime = T0;          // раньше сцепки
+        bad.timetable.stations[0].departure = T0;
+        const_cast<Scenario &>(w.scenario()).replace(2, bad);
+        cd.recheck();
+        QVERIFY(cd.shownCount() >= 1);
+        QVERIFY(cd.reportText().contains("ОШИБКА"));
+
+        bad.timetable.startTime = T0 + 600;
+        bad.timetable.stations[0].departure = T0 + 600;
+        const_cast<Scenario &>(w.scenario()).replace(2, bad);
+        cd.recheck();
+        QCOMPARE(cd.shownCount(), 0);
+    }
+
+    // Экспорт: локомотив раньше вагонов, у продолжения нет setTrain, есть график и переименование
+    ExportOptions opt;
+    opt.info.scenarioName = "chain";
+    QString err;
+    QVERIFY2(w.exportScenarioTo(opt, &err), qPrintable(err));
+
+    QFile f(root.path() + "/routes/r/scenarios/chain/main.lua");
+    QVERIFY(f.open(QIODevice::ReadOnly));
+    const QString lua = QString::fromUtf8(f.readAll());
+    QVERIFY(lua.indexOf("\"L\"") >= 0 && lua.indexOf("\"L\"") < lua.indexOf("\"W\""));
+    QVERIFY2(lua.contains("renameTrain(\"L\", \"Out\")"), qPrintable(lua));
+    QVERIFY(lua.contains("reverseTrain(\"Out\")"));
+    QVERIFY(lua.contains("12:07:00"));
+    QVERIFY(!lua.contains(".name = \"Out\""));
+    QVERIFY(QFileInfo::exists(root.path() + "/routes/r/scenarios/chain/timetable/Out.xml"));
+    QVERIFY(QFileInfo::exists(root.path() + "/routes/r/scenarios/chain/timetable/L.xml"));
+
+    // Проект: продолжение сохраняется
+    const QString proj = root.path() + "/c.rrsproj";
+    QVERIFY(w.saveProjectAs(proj));
+    MainWindow w2;
+    QVERIFY(w2.openProject(proj));
+    QVERIFY(w2.scenario().trains()[2].isContinuation());
+    QCOMPARE(w2.scenario().trains()[2].formedWagons, QString("W"));
+    QVERIFY(w2.scenario().trains()[2].timetable.valid);
+
+    // Локомотив прибывает в другую точку: отправная точка продолжения сдвигается, график сбрасывается
+    w.setTimetable(1, makeTimetable(T0, T0 + 300, 100.0, 320.0, "A", "B"));
+    QCOMPARE(w.scenario().trains()[2].coord, 270.0);
+    QVERIFY(!w.scenario().trains()[2].timetable.valid);
+
+    // Удаление вагонов уносит продолжение
+    w.removeTrain(0);
+    QCOMPARE(w.scenario().size(), 1);
+    QCOMPARE(w.scenario().trains()[0].name, QString("L"));
 }
 
 void TestConsist::dragAndRelocateTrain()

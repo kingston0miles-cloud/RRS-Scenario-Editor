@@ -13,10 +13,12 @@
 #include    "ui/place-train-dialog.h"
 #include    "ui/rolling-stock-panel.h"
 #include    "ui/trains-panel.h"
+#include    "scenario/project.h"
 
 #include    <QApplication>
 #include    <QCheckBox>
 #include    <QLineEdit>
+#include    <QMessageBox>
 #include    <QPushButton>
 #include    <QTimer>
 
@@ -36,6 +38,61 @@ void saveShot(const QImage &img, const QString &name)
     {
         img.save(dir + "/" + name);
     }
+}
+
+//------------------------------------------------------------------------------
+// Записать файл с каталогами
+//------------------------------------------------------------------------------
+void writeFile(const QString &path, const QString &content)
+{
+    QDir().mkpath(QFileInfo(path).absolutePath());
+
+    QFile f(path);
+    QVERIFY2(f.open(QIODevice::WriteOnly), qPrintable(path));
+    f.write(content.toUtf8());
+}
+
+//------------------------------------------------------------------------------
+// Минимальный маршрут для теста закрытия: прямая T1 8 км со станциями A, B, C
+//------------------------------------------------------------------------------
+void buildCloseRoute(const QString &root)
+{
+    QString traj;
+
+    for (int y = 0; y <= 8000; y += 500)
+    {
+        traj += QStringLiteral("0 %1 0 %2\n").arg(y).arg(y + 1000);
+    }
+
+    writeFile(root + "/topology/trajectories/T1.traj", traj);
+    writeFile(root + "/topology/topology.xml", "<?xml version=\"1.0\"?>\n<Config/>\n");
+    writeFile(root + "/topology/stations.conf",
+              "Станция-A\t0\t0\t0\n"
+              "Станция-B\t0\t4000\t0\n"
+              "Станция-C\t0\t8000\t0\n");
+}
+
+//------------------------------------------------------------------------------
+// Ответить на QMessageBox (Сохранить / Не сохранять / Отмена)
+//------------------------------------------------------------------------------
+void answerMessageBox(const QString &button_text)
+{
+    QTimer::singleShot(50, [button_text]
+    {
+        auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+
+        if (box != nullptr)
+        {
+            for (QAbstractButton *b : box->buttons())
+            {
+                if (b->text() == button_text)
+                {
+                    b->click();
+                    break;
+                }
+            }
+        }
+    });
 }
 
 } // namespace
@@ -65,6 +122,10 @@ private slots:
     void overlapBlocksPlacement();
     void reverseAndRemoveTrain();
     void splitTrainIntoParts();
+    void closeScenarioResetsWindow();
+    void undoRedoRestoresScenario();
+    void workflowHintsAndStartScan();
+    void mapModeHintAndKeyboard();
 };
 
 //------------------------------------------------------------------------------
@@ -465,6 +526,220 @@ void TestMainWindow::splitTrainIntoParts()
 
     QTest::qWait(30);
     saveShot(w.grab().toImage(), "split.png");
+}
+
+//------------------------------------------------------------------------------
+// Закрытие сценария (этап 20): подтверждение несохранённых изменений и
+// возврат к стартовому состоянию без перезапуска программы
+//------------------------------------------------------------------------------
+void TestMainWindow::closeScenarioResetsWindow()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    buildCloseRoute(dir.path() + "/routes/r");
+
+    // Проект с одним поездом (каталог игры не требуется)
+    Scenario sc;
+
+    PlacedTrain t;
+    t.name = "P1";
+    t.title = "P1";
+    t.trajectory = "T1";
+    t.coord = 1000.0;
+    t.dir = 1;
+    t.length = 200.0;
+    t.mass = 1.0e6;
+    sc.add(t);
+
+    ProjectInfo info;
+    info.routeDir = dir.path() + "/routes/r";
+
+    const QString project = dir.path() + "/p.rrsproj";
+    QString err;
+    QVERIFY2(saveProject(project, info, sc, &err), qPrintable(err));
+
+    MainWindow w;
+    QVERIFY(w.openProject(project));
+    QCOMPARE(w.scenario().size(), 1);
+    QVERIFY(w.route().isLoaded());
+    QVERIFY(w.windowTitle() != QStringLiteral("Редактор сценариев RRS"));
+
+    // Перенос поезда: проект изменён
+    QVERIFY(w.moveTrain(0, "T1", 2000.0, 1));
+    QVERIFY(w.isModified());
+
+    // «Отмена» в подтверждении: сценарий остаётся открытым
+    answerMessageBox(QStringLiteral("Отмена"));
+    w.closeScenario();
+    QVERIFY(w.route().isLoaded());
+    QVERIFY(w.isModified());
+    QCOMPARE(w.scenario().size(), 1);
+
+    // «Не сохранять»: полный сброс к стартовому состоянию
+    answerMessageBox(QStringLiteral("Не сохранять"));
+    w.closeScenario();
+    QVERIFY(!w.route().isLoaded());
+    QCOMPARE(w.scenario().size(), 0);
+    QVERIFY(!w.isModified());
+    QVERIFY(w.projectPath().isEmpty());
+    QCOMPARE(w.windowTitle(), QStringLiteral("Редактор сценариев RRS"));
+    QCOMPARE(w.rollingStockPanel()->visibleVehicleCount(), 0);
+}
+
+//------------------------------------------------------------------------------
+// Отмена и повтор (этап 24): переносы и удаления возвращаются Ctrl+Z/Ctrl+Y
+//------------------------------------------------------------------------------
+void TestMainWindow::undoRedoRestoresScenario()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    buildCloseRoute(dir.path() + "/routes/r");
+
+    Scenario sc;
+
+    PlacedTrain t;
+    t.name = "P1";
+    t.title = "P1";
+    t.trajectory = "T1";
+    t.coord = 1000.0;
+    t.dir = 1;
+    t.length = 200.0;
+    t.mass = 1.0e6;
+    sc.add(t);
+
+    ProjectInfo info;
+    info.routeDir = dir.path() + "/routes/r";
+
+    const QString project = dir.path() + "/p.rrsproj";
+    QString err;
+    QVERIFY2(saveProject(project, info, sc, &err), qPrintable(err));
+
+    MainWindow w;
+    QVERIFY(w.openProject(project));
+    QVERIFY(!w.canUndo());
+    QVERIFY(!w.canRedo());
+
+    // Перенос и удаление - два действия в истории
+    QVERIFY(w.moveTrain(0, "T1", 2000.0, 1));
+    QCOMPARE(w.scenario().trains()[0].coord, 2000.0);
+    QVERIFY(w.canUndo());
+
+    w.removeTrain(0);
+    QCOMPARE(w.scenario().size(), 0);
+
+    // Отмена: возврат поезда на место переноса, затем на исходное
+    w.undo();
+    QCOMPARE(w.scenario().size(), 1);
+    QCOMPARE(w.scenario().trains()[0].coord, 2000.0);
+
+    w.undo();
+    QCOMPARE(w.scenario().size(), 1);
+    QCOMPARE(w.scenario().trains()[0].coord, 1000.0);
+    QVERIFY(w.canRedo());
+
+    // Повтор: перенос и удаление снова
+    w.redo();
+    QCOMPARE(w.scenario().trains()[0].coord, 2000.0);
+
+    w.redo();
+    QCOMPARE(w.scenario().size(), 0);
+    QVERIFY(!w.canRedo());
+    QVERIFY(w.canUndo());
+}
+
+//------------------------------------------------------------------------------
+// Панель шагов, справка по клавишам и сканирование маршрутов (этапы 22-23)
+//------------------------------------------------------------------------------
+void TestMainWindow::workflowHintsAndStartScan()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    // Игровой корень: один настоящий маршрут и одна пустая папка
+    buildCloseRoute(dir.path() + "/routes/r");
+    QDir(dir.path() + "/routes/junk").mkpath(QStringLiteral("."));
+
+    const QStringList routes = MainWindow::scanRoutes(dir.path());
+    QCOMPARE(routes.size(), 1);
+    QCOMPARE(routes.first(), QStringLiteral("r"));
+
+    // Проект с одним поездом
+    Scenario sc;
+
+    PlacedTrain t;
+    t.name = "P1";
+    t.title = "P1";
+    t.trajectory = "T1";
+    t.coord = 1000.0;
+    t.dir = 1;
+    t.length = 200.0;
+    t.mass = 1.0e6;
+    sc.add(t);
+
+    ProjectInfo info;
+    info.routeDir = dir.path() + "/routes/r";
+
+    const QString project = dir.path() + "/p.rrsproj";
+    QString err;
+    QVERIFY2(saveProject(project, info, sc, &err), qPrintable(err));
+
+    MainWindow w;
+    QVERIFY(w.openProject(project));
+
+    // Шаг «маршрут» выполнен, текущий - «составы»
+    QVERIFY(w.workflowBar()->state().done(1));
+    QCOMPARE(w.workflowBar()->currentStep(), 2);
+
+    // Справка по клавишам: проверка F7 и экспорт Ctrl+E присутствуют
+    const QString hints = w.shortcutHints().join(QStringLiteral(" | "));
+    QVERIFY2(hints.contains(QStringLiteral("F7")), qPrintable(hints));
+    QVERIFY2(hints.contains(QStringLiteral("Ctrl+E")), qPrintable(hints));
+    QVERIFY2(hints.contains(QStringLiteral("Esc")), qPrintable(hints));
+
+    // Разбивка замечаний загрузки
+    QVERIFY(!w.warningsBreakdown().isEmpty());
+}
+
+//------------------------------------------------------------------------------
+// Полоса режима карты и клавиатура (аудит 1.4, 5.3)
+//------------------------------------------------------------------------------
+void TestMainWindow::mapModeHintAndKeyboard()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    buildCloseRoute(dir.path() + "/routes/r");
+
+    MainWindow w;
+    QVERIFY(w.openRoute(dir.path() + "/routes/r"));
+
+    // Обычный режим - подсказки нет
+    QVERIFY(w.map()->mapModeHint().isEmpty());
+
+    // Режим выбора точки
+    w.map()->setPickMode(true);
+    QVERIFY(w.map()->mapModeHint().contains(QStringLiteral("Выбор точки")));
+    w.map()->setPickMode(false);
+
+    // Режим расстановки
+    PlacedTrain ghost;
+    ghost.title = QStringLiteral("Состав-призрак");
+    w.map()->setPlacementTemplate(&ghost);
+    QVERIFY(w.map()->mapModeHint().contains(QStringLiteral("Расстановка")));
+    QVERIFY(w.map()->mapModeHint().contains(QStringLiteral("Esc")));
+    w.map()->setPlacementTemplate(nullptr);
+
+    // Клавиатура карты: масштаб, перемещение, поворот - без сбоев
+    QTest::keyClick(w.map(), Qt::Key_Plus);
+    QTest::keyClick(w.map(), Qt::Key_Minus);
+    QTest::keyClick(w.map(), Qt::Key_Left);
+    QTest::keyClick(w.map(), Qt::Key_Right);
+    QTest::keyClick(w.map(), Qt::Key_Up);
+    QTest::keyClick(w.map(), Qt::Key_Down);
+    QTest::keyClick(w.map(), Qt::Key_R);
+    QTest::keyClick(w.map(), Qt::Key_F);
 }
 
 QTEST_MAIN(TestMainWindow)

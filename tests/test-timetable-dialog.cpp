@@ -141,6 +141,138 @@ private slots:
         QCOMPARE(again.timetable().stations[1].departure, tt.stations[1].departure);
     }
 
+    //------------------------------------------------------------------------------
+    // Ручные времена: правка ячейки времени, якорь, возврат к авторасчёту
+    //------------------------------------------------------------------------------
+    void manualTimesEditing()
+    {
+        Scenario sc;
+        sc.add(makeTrain());
+
+        TimetableDialog dlg(route_, catalog_, sc, 0, TimetableState(), nullptr);
+        dlg.setEnd("T1", 8000.0);
+        QVERIFY2(dlg.plan().ok, qPrintable(dlg.plan().error));
+
+        // Станция B: остановка, ручное прибытие 09:30
+        dlg.table()->item(1, TimetableDialog::ColUse)->setCheckState(Qt::Checked);
+        auto *mode = qobject_cast<QComboBox *>(dlg.table()->cellWidget(1, TimetableDialog::ColMode));
+        mode->setCurrentIndex(1);
+
+        const int manual = 9 * 3600 + 30 * 60;
+        dlg.table()->item(1, TimetableDialog::ColArrival)->setText(QStringLiteral("9:30"));
+
+        QCOMPARE(dlg.timetable().stations[1].arrival, manual);
+        QVERIFY(dlg.timetable().stations[1].manualArrival);
+        QVERIFY(!dlg.timetable().stations[1].manualDeparture);
+
+        // Отправление - авторасчёт от ручного якоря (стоянка 1 мин)
+        QCOMPARE(dlg.timetable().stations[1].departure, manual + 60);
+
+        // Конечная станция пересчитана от якоря
+        QVERIFY(dlg.timetable().stations[2].arrival >= manual + 120);
+        QVERIFY(!dlg.timetable().stations[2].manualArrival);
+
+        // Ручные времена не двигаются при смене времени отправления
+        dlg.startEdit()->setTime(QTime(6, 0));
+        QCOMPARE(dlg.timetable().stations[1].arrival, manual);
+
+        // Возврат к авторасчёту одной кнопкой
+        dlg.recalcAllButton()->click();
+        QVERIFY(!dlg.timetable().stations[1].manualArrival);
+        QVERIFY(dlg.timetable().stations[1].arrival != manual);
+
+        // Ручное прибытие на конечной станции
+        dlg.table()->item(2, TimetableDialog::ColArrival)->setText(QStringLiteral("18:10"));
+        QCOMPARE(dlg.timetable().stations[2].arrival, 18 * 3600 + 10 * 60);
+        QVERIFY(dlg.timetable().stations[2].manualArrival);
+
+        // Противоречие: конец раньше предыдущего отправления - предупреждение
+        dlg.table()->item(2, TimetableDialog::ColArrival)->setText(QStringLiteral("5:00"));
+        QCOMPARE(dlg.timetable().stations[2].arrival, 5 * 3600);
+        QVERIFY(dlg.warningsText().contains(QStringLiteral("раньше")));
+
+        // Нераспознанный ввод откатывается к прежнему значению
+        dlg.table()->item(2, TimetableDialog::ColArrival)->setText(QStringLiteral("когда-нибудь"));
+        QCOMPARE(dlg.timetable().stations[2].arrival, 5 * 3600);
+    }
+
+    //------------------------------------------------------------------------------
+    // Закреплённые станции трассы («через станцию»)
+    //------------------------------------------------------------------------------
+    void routePins()
+    {
+        Scenario sc;
+        sc.add(makeTrain());
+
+        TimetableDialog dlg(route_, catalog_, sc, 0, TimetableState(), nullptr);
+        dlg.setEnd("T1", 8000.0);
+        QVERIFY2(dlg.plan().ok, qPrintable(dlg.plan().error));
+        QVERIFY(dlg.pinList()->isHidden());
+
+        // Закрепление станции из списка
+        const int b_index = dlg.pinCombo()->findText(QStringLiteral("Станция-B"));
+        QVERIFY(b_index >= 0);
+        dlg.pinCombo()->setCurrentIndex(b_index);
+        QCOMPARE(dlg.pinButton()->text(), QStringLiteral("Закрепить"));
+        dlg.pinButton()->click();
+
+        QVERIFY2(dlg.plan().ok, qPrintable(dlg.plan().error));
+        QCOMPARE(dlg.state().pins.size(), 1);
+        QCOMPARE(dlg.state().pins[0].station, QStringLiteral("Станция-B"));
+        QCOMPARE(dlg.pinList()->count(), 1);
+        QVERIFY(!dlg.pinList()->isHidden());
+        QCOMPARE(dlg.pinButton()->text(), QStringLiteral("Убрать"));
+
+        // Закрепление переживает смену конечной точки
+        dlg.setEnd("T1", 4000.0);
+        QVERIFY2(dlg.plan().ok, qPrintable(dlg.plan().error));
+        QCOMPARE(dlg.state().pins.size(), 1);
+
+        // Повторная кнопка убирает закрепление
+        dlg.pinButton()->click();
+        QCOMPARE(dlg.state().pins.size(), 0);
+        QVERIFY(dlg.pinList()->isHidden());
+    }
+
+    //------------------------------------------------------------------------------
+    // Режимы таблицы «Диспетчер/Тонкая настройка», статус «не применены»,
+    // категория поезда (этап 23, аудит 3.4-3.5, 3.8)
+    //------------------------------------------------------------------------------
+    void dispatcherModeAndDirty()
+    {
+        Scenario sc;
+        sc.add(makeTrain());
+
+        TimetableDialog dlg(route_, catalog_, sc, 0, TimetableState(), nullptr);
+
+        // Открытие диалога - не правка пользователя
+        QVERIFY(!dlg.isDirty());
+        QVERIFY(!dlg.simpleMode());
+
+        dlg.setEnd("T1", 8000.0);
+        QVERIFY2(dlg.plan().ok, qPrintable(dlg.plan().error));
+
+        // Режим «Диспетчер»: служебные столбцы скрыты, времена видны
+        dlg.setSimpleMode(true);
+        QVERIFY(dlg.simpleMode());
+        QVERIFY(dlg.table()->isColumnHidden(TimetableDialog::ColMode));
+        QVERIFY(dlg.table()->isColumnHidden(TimetableDialog::ColDwell));
+        QVERIFY(dlg.table()->isColumnHidden(TimetableDialog::ColExtra));
+        QVERIFY(dlg.table()->isColumnHidden(TimetableDialog::ColTrack));
+        QVERIFY(!dlg.table()->isColumnHidden(TimetableDialog::ColArrival));
+        QVERIFY(!dlg.table()->isColumnHidden(TimetableDialog::ColDeparture));
+
+        dlg.setSimpleMode(false);
+        QVERIFY(!dlg.table()->isColumnHidden(TimetableDialog::ColMode));
+
+        // Правка станционного поля помечает «изменения не применены»
+        dlg.table()->item(1, TimetableDialog::ColUse)->setCheckState(Qt::Checked);
+        QVERIFY(dlg.isDirty());
+
+        // Категория поезда из положения поезда
+        QCOMPARE(dlg.category(), 0);
+    }
+
     void eventDialogFlow()
     {
         Scenario sc;
@@ -180,6 +312,38 @@ private slots:
         dlg.triggerCombo()->setCurrentIndex(dlg.triggerCombo()->findData(
             static_cast<int>(TriggerType::AutoApproach)));
         QCOMPARE(dlg.event().trigger, TriggerType::AutoApproach);
+    }
+
+    void routeColumnAndMarks()
+    {
+        Scenario sc;
+        sc.add(makeTrain());
+
+        TimetableDialog dlg(route_, catalog_, sc, 0, TimetableState(), nullptr);
+
+        // Столбец «Маршрут» между отправлением и скоростью
+        QCOMPARE(dlg.table()->columnCount(), TimetableDialog::ColCount);
+        QCOMPARE(dlg.table()->horizontalHeaderItem(TimetableDialog::ColRoute)->text(),
+                 QStringLiteral("Маршрут"));
+
+        int marks_calls = 0;
+        int marks_size = -1;
+        connect(&dlg, &TimetableDialog::signalMarksChanged,
+                [&marks_calls, &marks_size](const QVector<SignalMark> &m)
+        {
+            ++marks_calls;
+            marks_size = m.size();
+        });
+
+        // На маршруте без светофоров подсветка пустая, но сигнал с оценкой приходит
+        dlg.setEnd("T1", 8000.0);
+        QVERIFY2(dlg.plan().ok, qPrintable(dlg.plan().error));
+        QVERIFY(marks_calls >= 1);
+        QCOMPARE(marks_size, 0);
+
+        // Оценка выполнения графика заполнена у начала и конца
+        QVERIFY(!dlg.table()->item(0, TimetableDialog::ColRoute)->text().isEmpty());
+        QVERIFY(!dlg.table()->item(1, TimetableDialog::ColRoute)->text().isEmpty());
     }
 };
 

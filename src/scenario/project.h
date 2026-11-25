@@ -34,6 +34,14 @@ struct ProjectInfo
     /// Каталог маршрута и корень игры (для повторного открытия)
     QString routeDir;
     QString gameRoot;
+
+    /// SHA-256 файла main.lua, записанного последним экспортом: проект помнит, что
+    /// сам записал, и предупреждает, если файл после этого правился вручную
+    /// (пусто - экспорта ещё не было или проект сохранён прежней версией редактора)
+    QString exportedMainSha256;
+
+    /// Момент последнего экспорта (с начала эпохи; -1 - неизвестно)
+    qint64 exportedAt = -1;
 };
 
 /// Время начала игры по умолчанию: за 3 мин до первого отправления по графику,
@@ -52,6 +60,11 @@ QByteArray projectSnapshot(const ProjectInfo &info, const Scenario &scenario);
 /// (при необходимости их пересчитывают по каталогу)
 bool loadProject(const QString &path, ProjectInfo *info, Scenario *scenario,
                  QString *error = nullptr);
+
+/// Прочитать проект из байтов (снимок projectSnapshot: для отмены/повтора).
+/// Пути маршрута и игры в снимке пустые - их восстанавливает вызывающий
+bool loadProjectData(const QByteArray &data, ProjectInfo *info, Scenario *scenario,
+                     QString *error = nullptr);
 
 /// Каталог маршрута из файла проекта, не загружая поезда (найденный
 /// относительный или абсолютный путь; пусто - не найден)

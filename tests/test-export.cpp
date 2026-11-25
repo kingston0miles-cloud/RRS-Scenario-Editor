@@ -1,5 +1,6 @@
 #include    <QtTest>
 
+#include    <QCryptographicHash>
 #include    <QDir>
 #include    <QFile>
 #include    <QTemporaryDir>
@@ -152,6 +153,22 @@ private slots:
         scenario_.add(b);
     }
 
+    void plannedTrainOnlyTimetable()
+    {
+        Scenario sc = scenario_;
+        PlacedTrain t = sc.trains()[0];
+        t.planned = true;
+        sc.replace(0, t);
+
+        ExportOptions opt;
+        opt.info.scenarioName = "demo2";
+
+        const ExportPlan plan = planExport(route_, catalog_, sc, opt);
+        QVERIFY2(plan.ok(), qPrintable(plan.errors.join("; ")));
+        QCOMPARE(plan.trains.size(), 1);
+        QVERIFY(plan.files.contains("timetable/Поезд 1.xml"));
+    }
+
     void planAndWrite()
     {
         ExportOptions opt;
@@ -241,6 +258,96 @@ private slots:
 
         QVERIFY(!isValidScenarioName(""));
         QVERIFY(isValidScenarioName("my-scenario_1"));
+    }
+
+    void warningGroups()
+    {
+        const ExportWarningGroups g = groupExportWarnings({
+            QStringLiteral("Поезд «1»: график задан, но бот выключен - по графику ведёт "
+                           "поезд только автопилот."),
+            QStringLiteral("Поезд «2»: бот включён, но у крайней единицы нет автопилота - "
+                           "автоведение не заработает."),
+            QStringLiteral("Сцепка «3»: нет графика - после сцепки поезд будет стоять."),
+            QStringLiteral("В main.lua есть правки после прошлого экспорта - при записи "
+                           "они будут потеряны, предыдущая версия сохранится в main.lua.bak-1."),
+            QStringLiteral("Проверка графиков: пересечение поездов «1» и «2» на траектории T."),
+            QStringLiteral("Маршруты: «1», «B»: маршрут приёма не строится."),
+            QStringLiteral("Событие 1 «x»: траектория «nope» не найдена.") });
+
+        // Поезд может не поехать: оба сломанных бота, сцепка без графика, ручные правки
+        QCOMPARE(g.stop.size(), 4);
+        // Возможные заторы: проверка графиков и маршруты
+        QCOMPARE(g.jam.size(), 2);
+        QCOMPARE(g.info.size(), 1);
+        QVERIFY(g.info.first().contains("Событие 1"));
+    }
+
+    void mainLuaProtection()
+    {
+        const QString scenario_dir = routeDir() + "/scenarios/guarded";
+
+        // Первый экспорт: файла ещё нет, копия не обещается
+        ExportOptions opt;
+        opt.info.scenarioName = "guarded";
+
+        ExportPlan plan = planExport(route_, catalog_, scenario_, opt);
+        QVERIFY2(plan.ok(), qPrintable(plan.errors.join("; ")));
+        QVERIFY(plan.mainBackupName.isEmpty());
+        QVERIFY(plan.existingMainSha256.isEmpty());
+
+        QString err;
+        QVERIFY2(writeExport(route_, catalog_, scenario_, plan, opt, &err), qPrintable(err));
+
+        const QString main_path = scenario_dir + "/main.lua";
+        const QByteArray written = readFile(main_path).toUtf8();
+        const QString sha = QString::fromLatin1(
+            QCryptographicHash::hash(written, QCryptographicHash::Sha256).toHex());
+        QVERIFY(!sha.isEmpty());
+
+        // Пользователь отредактировал main.lua вручную: замена предупреждает
+        writeFile(main_path, QStringLiteral("-- ручные правки\n") + QString::fromUtf8(written));
+
+        opt.overwrite = true;
+        opt.info.exportedMainSha256 = sha;
+
+        plan = planExport(route_, catalog_, scenario_, opt);
+        QVERIFY2(plan.ok(), qPrintable(plan.errors.join("; ")));
+        QVERIFY(plan.mainEdited);
+        QVERIFY(!plan.mainBackupName.isEmpty());
+        QVERIFY(plan.warnings.join("\n").contains("будут потеряны"));
+
+        // При записи предыдущая версия сохраняется в резервную копию
+        QVERIFY2(writeExport(route_, catalog_, scenario_, plan, opt, &err), qPrintable(err));
+        QVERIFY(readFile(scenario_dir + "/" + plan.mainBackupName).contains("ручные правки"));
+        QVERIFY(readFile(main_path).contains("setTime"));
+
+        // Экспорт того же содержимого: копия не создаётся
+        const int backups_before = QDir(scenario_dir).entryList(
+            QStringList(QStringLiteral("main.lua.bak-*"))).size();
+
+        opt.info.exportedMainSha256 = QString::fromLatin1(
+            QCryptographicHash::hash(readFile(main_path).toUtf8(), QCryptographicHash::Sha256).toHex());
+
+        plan = planExport(route_, catalog_, scenario_, opt);
+        QVERIFY2(plan.ok(), qPrintable(plan.errors.join("; ")));
+        QVERIFY(!plan.mainEdited);
+        QVERIFY2(writeExport(route_, catalog_, scenario_, plan, opt, &err), qPrintable(err));
+
+        QCOMPARE(QDir(scenario_dir).entryList(
+                     QStringList(QStringLiteral("main.lua.bak-*"))).size(), backups_before);
+
+        // Без проекта (хеш неизвестен) - копия обещается и создаётся при замене
+        writeFile(main_path, QStringLiteral("-- чужие правки\n"));
+
+        opt.info.exportedMainSha256.clear();
+        plan = planExport(route_, catalog_, scenario_, opt);
+        QVERIFY2(plan.ok(), qPrintable(plan.errors.join("; ")));
+        QVERIFY(!plan.mainEdited);
+        QVERIFY(!plan.mainBackupName.isEmpty());
+        QVERIFY(plan.warnings.join("\n").contains("неизвестно"));
+
+        QVERIFY2(writeExport(route_, catalog_, scenario_, plan, opt, &err), qPrintable(err));
+        QVERIFY(readFile(scenario_dir + "/" + plan.mainBackupName).contains("чужие правки"));
     }
 
     void eventsLuaAndChecks()
@@ -346,6 +453,8 @@ private slots:
         info.startTime = 43200;
         info.routeDir = routeDir();
         info.gameRoot = dir_.path();
+        info.exportedMainSha256 = QStringLiteral("abc123");
+        info.exportedAt = 1763900000;
 
         const QString path = dir_.path() + "/work/p.rrsproj";
         QDir().mkpath(dir_.path() + "/work");
@@ -360,6 +469,8 @@ private slots:
         QCOMPARE(got.scenarioName, info.scenarioName);
         QCOMPARE(got.description, info.description);
         QCOMPARE(got.startTime, 43200);
+        QCOMPARE(got.exportedMainSha256, QStringLiteral("abc123"));
+        QCOMPARE(got.exportedAt, qint64(1763900000));
         QCOMPARE(QDir(got.routeDir).canonicalPath(), QDir(routeDir()).canonicalPath());
         QCOMPARE(sc.size(), 2);
 
@@ -377,6 +488,43 @@ private slots:
         QCOMPARE(sc.trains()[1].groups.last().count, 2);
 
         QCOMPARE(QDir(projectRouteDir(path)).canonicalPath(), QDir(routeDir()).canonicalPath());
+
+        // Закрепления трассы и ручные времена строк переживают сохранение
+        Scenario sc3 = sc;
+        PlacedTrain t3 = sc3.trains()[0];
+
+        TripPin pin;
+        pin.station = QStringLiteral("Станция-B");
+        pin.track = QStringLiteral("T2");
+        pin.trackCoord = 1500.0;
+        t3.pins.push_back(pin);
+
+        QVERIFY(!t3.timetable.stations.isEmpty());
+        t3.timetable.stations[0].manualArrival = true;
+        t3.timetable.stations[1].manualDeparture = true;
+
+        sc3.replace(0, t3);
+
+        const QString ppath = dir_.path() + "/work/pins.rrsproj";
+        QVERIFY2(saveProject(ppath, info, sc3, &err), qPrintable(err));
+
+        Scenario got_sc;
+        QVERIFY2(loadProject(ppath, &got, &got_sc, &err), qPrintable(err));
+        QCOMPARE(got_sc.trains()[0].pins.size(), 1);
+        QCOMPARE(got_sc.trains()[0].pins[0].station, QStringLiteral("Станция-B"));
+        QCOMPARE(got_sc.trains()[0].pins[0].track, QStringLiteral("T2"));
+        QCOMPARE(got_sc.trains()[0].pins[0].trackCoord, 1500.0);
+        QVERIFY(got_sc.trains()[0].timetable.stations[0].manualArrival);
+        QVERIFY(got_sc.trains()[0].timetable.stations[1].manualDeparture);
+
+        // Снимок проекта из байтов (основа отмены/повтора) читается тем же разбором
+        const QByteArray snap = projectSnapshot(info, sc3);
+        ProjectInfo snap_info;
+        Scenario snap_sc;
+        QVERIFY2(loadProjectData(snap, &snap_info, &snap_sc, &err), qPrintable(err));
+        QCOMPARE(snap_sc.size(), 2);
+        QCOMPARE(snap_sc.trains()[0].pins.size(), 1);
+        QCOMPARE(snap_sc.trains()[0].pins[0].station, QStringLiteral("Станция-B"));
 
         // Файл не проекта
         writeFile(dir_.path() + "/x.json", "{\"a\":1}");

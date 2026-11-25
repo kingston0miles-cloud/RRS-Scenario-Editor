@@ -97,7 +97,8 @@ PlacementCheck Scenario::check(const Route &route, const PlacedTrain &train,
 
     for (int i = 0; i < trains_.size(); ++i)
     {
-        if (i == ignore_index)
+        // Продолжение на путях не стоит
+        if (i == ignore_index || trains_[i].isVirtual())
         {
             continue;
         }

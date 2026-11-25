@@ -85,6 +85,9 @@ struct ScenarioEvent
     int delaySec = 0;
 
     QVector<EventAction> actions;
+
+    /// Поезд, ради которого редактор создал событие по графику (пусто - событие пользователя)
+    QString owner;
 };
 
 /// Что в действии надо задать: число строковых полей и нужно ли направление
@@ -122,7 +125,7 @@ EventCheck checkEvent(const Route &route, const Scenario &scenario, const Scenar
                       int start_time);
 
 /// Lua-текст всех событий (пустая строка, если событий нет)
-QString luaEvents(const QVector<ScenarioEvent> &events);
+QString luaEvents(const QVector<ScenarioEvent> &events, int first_index = 0);
 
 QString luaQuote(const QString &s);
 

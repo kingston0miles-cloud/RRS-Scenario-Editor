@@ -61,9 +61,23 @@ struct TripPlan
     TripPosition position(double s) const;
 };
 
-/// Подготовить путь поезда с индексом train_index до точки (traj, coord)
+/// Точка, через которую путь должен пройти (выбранный путь станции)
+struct TripVia
+{
+    QString trajectory;
+    double coord = 0.0;
+};
+
+/// Точка пути для закреплённой станции: выбранный путь (track, trackCoord) или
+/// ближайший к станции путь. false - станция не найдена или путей у неё нет
+bool pinToPoint(const Route &route, const QString &station, const QString &track,
+                double trackCoord, TripVia *via);
+
+/// Подготовить путь поезда с индексом train_index до точки (traj, coord),
+/// проходящий по порядку через точки vias
 TripPlan buildTripPlan(const Route &route, const VehicleCatalog &catalog, const Scenario &scenario,
-                       int train_index, const QString &traj, double coord);
+                       int train_index, const QString &traj, double coord,
+                       const QVector<TripVia> &vias = QVector<TripVia>());
 
 //------------------------------------------------------------------------------
 // Как поезд ведёт себя на станции пути
@@ -90,6 +104,12 @@ struct StopSpec
 
     /// Дополнительный запас на перегон до этой станции, мин
     double extraMin = 0.0;
+
+    /// Ручное время прибытия, с от начала суток (-1 - авторасчёт)
+    int manualArrival = -1;
+
+    /// Ручное время отправления, с от начала суток (-1 - авторасчёт)
+    int manualDeparture = -1;
 };
 
 struct TripOptions
@@ -109,6 +129,9 @@ struct TripOptions
 
     /// Личный запас на перегон до конечной станции, мин
     double endExtraMin = 0.0;
+
+    /// Ручное время прибытия на конечную станцию, с от начала суток (-1 - авторасчёт)
+    int endManualArrival = -1;
 };
 
 //------------------------------------------------------------------------------
@@ -132,6 +155,10 @@ struct TripRow
 
     /// Скорость прохода, км/ч
     double speedKmh = 0.0;
+
+    /// Ручные времена строки (заданы пользователем, идут в экспорт как введены)
+    bool manualArrival = false;
+    bool manualDeparture = false;
 
     TripPosition position;
 };

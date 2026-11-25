@@ -46,9 +46,21 @@ public:
     /// Выбрать единицу по каталогу конфигов и имени конфига
     bool selectVehicle(const QString &config_dir, const QString &config);
 
+    /// Открыть диалог назначения модуля каталогу конфигов (аудит 2.4, ссылка
+    /// «Назначить модуль» из диалога поезда). После назначения - refresh и сигнал
+    void assignModuleForUnit(const QString &config_dir);
+
     /// Число видимых строк-единиц и строк-составов (для проверок)
     int visibleVehicleCount() const;
     int visibleTrainCount() const;
+
+    /// Вкладка списка: 0 - «Единицы», 1 - «Готовые составы» (аудит 2.7)
+    int activeTab() const
+    {
+        return tab_;
+    }
+
+    void setActiveTab(int tab);
 
 signals:
 
@@ -79,10 +91,12 @@ private:
     QLineEdit *filter_edit_ = nullptr;
     QTreeWidget *tree_ = nullptr;
     QLabel *summary_label_ = nullptr;
+    int tab_ = 0;
 
     void fillVehicles();
     void fillTrains();
     void applyFilter();
+    void applyTabFilter();
 
     static QString sourceText(ModuleSource source);
 };

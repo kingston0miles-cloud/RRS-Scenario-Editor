@@ -6,10 +6,12 @@
 #include    "scenario/export.h"
 
 class QCheckBox;
+class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
 class QTimeEdit;
+class QTreeWidget;
 
 namespace rse
 {
@@ -63,10 +65,19 @@ private:
     QTimeEdit *start_edit_ = nullptr;
     QPlainTextEdit *description_ = nullptr;
     QCheckBox *overwrite_ = nullptr;
+    QCheckBox *triggers_ = nullptr;
+
+    /// Ссылка «показать события» и раскрываемый список авто-событий по поездам
+    QLabel *auto_link_ = nullptr;
+    QTreeWidget *auto_tree_ = nullptr;
+    bool auto_details_ = false;
+
     QPlainTextEdit *preview_ = nullptr;
     QPushButton *export_button_ = nullptr;
 
     ProjectInfo info_;
+
+    void fillAutoTree(const QVector<ScenarioEvent> &events);
 };
 
 } // namespace rse

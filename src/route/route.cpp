@@ -480,6 +480,10 @@ void Route::loadSwitches()
                 cur.signalFwd = text;
             else if (tag == QLatin1String("SignalLiterBwd"))
                 cur.signalBwd = text;
+            else if (tag == QLatin1String("SignalModelFwd"))
+                cur.modelFwd = text;
+            else if (tag == QLatin1String("SignalModelBwd"))
+                cur.modelBwd = text;
         }
         else if (xml.isEndElement() && xml.name() == QLatin1String("Switch"))
         {
@@ -882,18 +886,22 @@ static bool isShuntingLiter(const QString &liter)
 //------------------------------------------------------------------------------
 // Правильное направление путей по светофорам.
 //
-// Литера Bwd в стрелке - светофор со стороны "назад", он ведёт поезда в сторону
-// "вперёд" (+1 через стрелку); литера Fwd - светофор со стороны "вперёд",
-// ведущий в сторону "назад" (-1). Для траектории светофор означает направление
-// движения вдоль неё, зависящее от примыкания к стрелке:
+// Соглашение симулятора (v1.9.4, Topology::open_route_signals): для поезда,
+// движущегося в направлении +1 по траектории, у стрелки впереди открывается
+// светофор signalFwd (SignalLiterFwd); signalBwd (SignalLiterBwd) открывается
+// для движения -1. Светофор Fwd стоит на стороне "назад" стрелки и ведёт
+// поезда в сторону "вперёд" (+1 через стрелку); светофор Bwd - со стороны
+// "вперёд", ведущий в сторону "назад" (-1). Для траектории светофор означает
+// направление движения вдоль неё, зависящее от примыкания к стрелке:
 //   bwd*, концом               : +1 через стрелку = уход с траектории (+1)
 //   fwdPlus/fwdMinus, началом  : +1 через стрелку = въезд на траекторию (+1)
 //   fwdMinusReversed, концом   : +1 через стрелку = въезд с конца (-1)
-// Светофоры с обеими литерами (проходные в узле-стыке) направления не задают.
-// Светофор с буквой "Д" в конце (ЧД, НД) - выход на неправильный путь, он
-// направление не подтверждает, а наоборот указывает неправильное (правильное -
-// противоположное). Из этих признаков получается направление концов траектории;
-// далее оно переносится на соседей через простые стыки
+// Светофоры с обеими литерами (проходные на перегоне, у них FWD и BWD совпадают)
+// направления не задают. Светофор с буквой "Д" в конце (ЧД, НД) - выход на
+// неправильный путь, он направление не подтверждает, а наоборот указывает
+// неправильное (правильное - противоположное). Из этих признаков получается
+// направление концов траектории; далее оно переносится на соседей через
+// простые стыки
 //------------------------------------------------------------------------------
 void Route::calcPathDirections()
 {
@@ -928,8 +936,9 @@ void Route::calcPathDirections()
 
         const bool wrong = liter.trimmed().toUpper().endsWith(QChar(0x0414));
 
-        // Движение, которое ведёт светофор: +1 вперёд через стрелку, -1 назад
-        const int through = bwd ? 1 : -1;
+        // Движение, которое ведёт светофор: литера Fwd - +1 вперёд через стрелку,
+        // литера Bwd - -1 назад (как в open_route_signals симулятора)
+        const int through = bwd ? -1 : 1;
 
         auto vote = [&](const QString &name, int sign)
         {
@@ -1015,6 +1024,51 @@ void Route::calcPathDirections()
             }
         }
     }
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+const SwitchData *Route::findSwitch(const QString &name) const
+{
+    if (switch_by_name_.size() != switches_.size())
+    {
+        switch_by_name_.clear();
+
+        for (int i = 0; i < switches_.size(); ++i)
+        {
+            switch_by_name_.insert(switches_[i].name, i);
+        }
+    }
+
+    const int i = switch_by_name_.value(name, -1);
+
+    return (i >= 0) ? &switches_[i] : nullptr;
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+SignalRole signalRoleOf(const QString &model)
+{
+    const QString tail = model.right(4);
+
+    if (tail == QLatin1String("line"))
+        return SignalRole::Line;
+
+    if (tail == QLatin1String("entr"))
+        return SignalRole::Enter;
+
+    if (tail == QLatin1String("rout"))
+        return SignalRole::Route;
+
+    if (tail == QLatin1String("exit"))
+        return SignalRole::Exit;
+
+    if (tail == QLatin1String("shnt"))
+        return SignalRole::Shunt;
+
+    return SignalRole::None;
 }
 
 //------------------------------------------------------------------------------

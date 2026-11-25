@@ -40,6 +40,7 @@ signals:
     void editRequested(int index);
     void consistRequested(int index);
     void timetableRequested(int index);
+    void continuationRequested(int index);
 
     /// Двойной щелчок: показать поезд на карте
     void showRequested(int index);
@@ -57,6 +58,7 @@ private:
     QPushButton *reverse_button_ = nullptr;
     QPushButton *edit_button_ = nullptr;
     QPushButton *consist_button_ = nullptr;
+    QPushButton *continuation_button_ = nullptr;
     QPushButton *timetable_button_ = nullptr;
 
     void updateButtons();

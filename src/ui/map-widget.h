@@ -11,6 +11,20 @@
 namespace rse
 {
 
+/// Светофор для подсветки на карте: стрелка, на которой он стоит, и литера
+struct SignalMark
+{
+    QString sw;
+    QString liter;
+
+    /// Станционный (входной/маршрутный/выходной) - цветное кольцо, линейный -
+    /// точка; подпись литеры ставится только у станционных и линейных с литерой
+    bool station = true;
+
+    /// Показать красным: маршрут этого сигнала не строится
+    bool problem = false;
+};
+
 //------------------------------------------------------------------------------
 // Схема путей маршрута: масштаб колесом, перемещение левой кнопкой,
 // стрелки показывают направление "1" (от начала траектории к концу)
@@ -44,10 +58,18 @@ public:
     /// Подсветить путь поезда по расписанию и его станции (пустой путь - убрать)
     void setTripOverlay(const QVector<PathSegment> &path, const QVector<TimetableStation> &stations);
 
+    /// Подсветить светофоры, которые откроются маршрутами графика (пусто - убрать;
+    /// из окна графика, этап 19)
+    void setSignalMarks(const QVector<SignalMark> &marks);
+
     bool placementActive() const
     {
         return placement_ != nullptr;
     }
+
+    /// Подсказка текущего режима карты (аудит 1.4): расстановка или выбор точки;
+    /// пусто - обычный режим. Тот же текст рисуется цветной полосой сверху
+    QString mapModeHint() const;
 
     /// Выделить поезд (индекс в сценарии, -1 - нет)
     void setSelectedTrain(int index);
@@ -107,6 +129,7 @@ protected:
 
     void paintEvent(QPaintEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
@@ -124,6 +147,7 @@ private:
     int press_train_ = -1;
     QVector<PathSegment> trip_path_;
     QVector<TimetableStation> trip_stations_;
+    QVector<SignalMark> signal_marks_;
 
     /// Масштаб: пикселей на метр
     double scale_ = 1.0;

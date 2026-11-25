@@ -98,6 +98,9 @@ public:
 
     const TrajectoryData *find(const QString &name) const;
 
+    /// Стрелка по имени (nullptr, если нет)
+    const SwitchData *findSwitch(const QString &name) const;
+
     const QVector<SwitchData> &switches() const
     {
         return switches_;
@@ -161,6 +164,7 @@ private:
 
     /// Ключ "имя\x01e" (конец) / "имя\x01s" (начало) → индексы стрелок
     QHash<QString, QVector<int>> endpoint_index_;
+    mutable QHash<QString, int> switch_by_name_;
 };
 
 } // namespace rse

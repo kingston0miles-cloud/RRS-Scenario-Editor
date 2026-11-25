@@ -1,19 +1,27 @@
 #include    "ui/timetable-dialog.h"
+#include    "scenario/autotriggers.h"
+#include    "scenario/export.h"
+#include    "scenario/stationroute.h"
 
 #include    <QComboBox>
+#include    <QButtonGroup>
 #include    <QDoubleSpinBox>
 #include    <QFormLayout>
 #include    <QGroupBox>
 #include    <QHBoxLayout>
 #include    <QHeaderView>
 #include    <QLabel>
+#include    <QListWidget>
 #include    <QPlainTextEdit>
 #include    <QPushButton>
+#include    <QSet>
 #include    <QSignalBlocker>
 #include    <QTableWidget>
 #include    <QTimeEdit>
+#include    <QToolButton>
 #include    <QVBoxLayout>
 
+#include    <algorithm>
 #include    <cmath>
 
 namespace rse
@@ -27,6 +35,87 @@ QString minutesText(double sec)
     const int total = static_cast<int>(std::lround(sec));
 
     return QObject::tr("%1 мин %2 с").arg(total / 60).arg(total % 60);
+}
+
+/// Время в виде ЧЧ:ММ (столбцы прибытия и отправления редактируемые)
+QString clockText(int sec)
+{
+    sec = ((sec % 86400) + 86400) % 86400;
+
+    return QStringLiteral("%1:%2")
+            .arg(sec / 3600, 2, 10, QLatin1Char('0'))
+            .arg((sec / 60) % 60, 2, 10, QLatin1Char('0'));
+}
+
+/// Разбор времени «Ч», «Ч:М», «Ч:ММ:СС». ok=false - не распознано;
+/// пустая строка - очистка ручного времени (ok=true, результат -1)
+int parseClockText(const QString &text, bool *ok)
+{
+    const QString t = text.trimmed();
+
+    *ok = false;
+
+    if (t.isEmpty())
+    {
+        *ok = true;
+        return -1;
+    }
+
+    const QStringList parts = t.split(QLatin1Char(':'));
+
+    if (parts.isEmpty() || parts.size() > 3)
+    {
+        return -1;
+    }
+
+    qint64 v[3] = {0, 0, 0};
+
+    for (int i = 0; i < parts.size(); ++i)
+    {
+        bool num = false;
+        v[i] = parts[i].toLongLong(&num);
+
+        if (!num || v[i] < 0)
+        {
+            return -1;
+        }
+    }
+
+    if ((v[0] > 47) || (parts.size() > 1 && v[1] > 59) || (parts.size() > 2 && v[2] > 59))
+    {
+        return -1;
+    }
+
+    *ok = true;
+
+    return static_cast<int>(v[0] * 3600 + v[1] * 60 + v[2]);
+}
+
+/// Когда поезд впервые вступит на траекторию по расчётным точкам движения
+/// (fallback - если траектории в точках нет)
+int enterTime(const QVector<TimetableSample> &samples, const QString &traj, int fallback)
+{
+    for (const TimetableSample &s : samples)
+    {
+        if (s.trajectory == traj)
+        {
+            return s.time;
+        }
+    }
+
+    return fallback;
+}
+
+/// Значок важности строки замечания (аудит 3.3): противоречия времён - «⚠»,
+/// прочие замечания - «ℹ»
+QString warnIcon(const QString &line)
+{
+    if (line.contains(QStringLiteral("раньше")) || line.contains(QStringLiteral("поправьте")))
+    {
+        return QStringLiteral("⚠ ") + line;
+    }
+
+    return QStringLiteral("ℹ ") + line;
 }
 
 } // namespace
@@ -63,6 +152,7 @@ TimetableState TimetableState::fromTimetable(const Timetable &tt)
         {
             st.endName = s.name;
             st.endExtraMin = s.extraMin;
+            st.endManualArrival = s.manualArrival ? s.arrival : -1;
             continue;
         }
 
@@ -71,6 +161,10 @@ TimetableState TimetableState::fromTimetable(const Timetable &tt)
         ss.stop = s.stops();
         ss.dwellMin = std::max(1, (s.departure - s.arrival) / 60);
         ss.extraMin = s.extraMin;
+        ss.track = s.targetTrajectory;
+        ss.trackCoord = s.targetCoord;
+        ss.manualArrival = s.manualArrival ? s.arrival : -1;
+        ss.manualDeparture = s.manualDeparture ? s.departure : -1;
         st.stations.insert(s.name, ss);
     }
 
@@ -122,6 +216,33 @@ TimetableDialog::TimetableDialog(const Route &route, const VehicleCatalog &catal
     end_row->addWidget(pick);
     path_form->addRow(tr("До:"), end_row);
 
+    // Закреплённые промежуточные станции: путь строится «через станцию»
+    pin_combo_ = new QComboBox(path_box);
+
+    for (const StationData &sd : route_.stations())
+    {
+        pin_combo_->addItem(sd.name);
+    }
+
+    pin_button_ = new QPushButton(tr("Закрепить"), path_box);
+    pin_button_->setEnabled(!route_.stations().isEmpty());
+    connect(pin_button_, &QPushButton::clicked, this, &TimetableDialog::onPinButton);
+    connect(pin_combo_, &QComboBox::currentTextChanged,
+            this, [this] { refreshPinControls(); });
+
+    pin_list_ = new QListWidget(path_box);
+    pin_list_->setMaximumHeight(64);
+    pin_list_->setToolTip(tr("Путь поезда пройдёт через эти станции по порядку. "
+                             "Путь станции выбирается в таблице"));
+    connect(pin_list_, &QListWidget::itemSelectionChanged,
+            this, &TimetableDialog::onPinSelected);
+
+    auto *pin_row = new QHBoxLayout;
+    pin_row->addWidget(pin_combo_, 1);
+    pin_row->addWidget(pin_button_);
+    path_form->addRow(tr("Через:"), pin_row);
+    path_form->addRow(QString(), pin_list_);
+
     start_edit_ = new QTimeEdit(QTime(0, 0).addSecs(state_.startTime), path_box);
     start_edit_->setDisplayFormat(QStringLiteral("HH:mm"));
 
@@ -148,6 +269,19 @@ TimetableDialog::TimetableDialog(const Route &route, const VehicleCatalog &catal
     time_row->addWidget(def_button);
     time_row->addStretch(1);
     path_form->addRow(time_row);
+
+    // Категория поезда (аудит 3.8)
+    class_box_ = new QComboBox(path_box);
+
+    for (int c = 0; c <= static_cast<int>(TrainClass::Service); ++c)
+    {
+        class_box_->addItem(trainClassTitle(static_cast<TrainClass>(c)), c);
+    }
+
+    class_box_->setCurrentIndex(std::clamp(train.trainClass, 0, static_cast<int>(TrainClass::Service)));
+    class_box_->setToolTip(tr("Определяет очерёдность пропуска: поезд низшей категории не "
+                              "получит маршрут раньше высшей, если графики спорят за один путь"));
+    path_form->addRow(tr("Категория:"), class_box_);
 
     layout->addWidget(path_box);
 
@@ -184,16 +318,52 @@ TimetableDialog::TimetableDialog(const Route &route, const VehicleCatalog &catal
 
     layout->addWidget(traction_box);
 
+    // Ручные времена: возврат строк к авторасчёту; режим таблицы (аудит 3.5)
+    auto *recalc_row = new QHBoxLayout;
+    recalc_row->addWidget(new QLabel(tr("Ручные времена:"), this));
+    recalc_next_ = new QPushButton(tr("Пересчитать далее"), this);
+    recalc_next_->setToolTip(tr("Со строки с курсором и ниже: вернуть время к авторасчёту"));
+    recalc_all_ = new QPushButton(tr("Пересчитать всё"), this);
+    recalc_all_->setToolTip(tr("Вернуть все строки графика к авторасчёту"));
+    recalc_row->addWidget(recalc_next_);
+    recalc_row->addWidget(recalc_all_);
+    recalc_row->addStretch(1);
+
+    simple_mode_ = false;
+    auto *simple_btn = new QToolButton(this);
+    simple_btn->setText(tr("Диспетчер"));
+    simple_btn->setCheckable(true);
+    simple_btn->setToolTip(tr("Только станции и времена - без стоянок, запасов и путей"));
+
+    auto *fine_btn = new QToolButton(this);
+    fine_btn->setText(tr("Тонкая настройка"));
+    fine_btn->setCheckable(true);
+    fine_btn->setChecked(true);
+
+    auto *mode_group = new QButtonGroup(this);
+    mode_group->addButton(simple_btn, 0);
+    mode_group->addButton(fine_btn, 1);
+    mode_group->setExclusive(true);
+    recalc_row->addWidget(new QLabel(tr("Таблица:"), this));
+    recalc_row->addWidget(simple_btn);
+    recalc_row->addWidget(fine_btn);
+    layout->addLayout(recalc_row);
+
+    connect(mode_group, &QButtonGroup::idClicked, this, [this](int id)
+    {
+        setSimpleMode(id == 0);
+    });
+
     // Таблица
     table_ = new QTableWidget(this);
     table_->setColumnCount(ColCount);
-    table_->setHorizontalHeaderLabels({ tr("В графике"), tr("Станция"), tr("км"), tr("Режим"),
+    table_->setHorizontalHeaderLabels({ tr("В графике"), tr("Станция"), tr("км"), tr("Путь станции"), tr("Режим"),
                                         tr("Стоянка, мин"), tr("Запас до станции, мин"),
-                                        tr("Прибытие"), tr("Отправление"), tr("Скорость, км/ч") });
+                                        tr("Прибытие"), tr("Отправление"), tr("Маршрут"), tr("Скорость, км/ч") });
     table_->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     table_->horizontalHeader()->setSectionResizeMode(ColName, QHeaderView::Stretch);
     table_->verticalHeader()->hide();
-    table_->setSelectionMode(QAbstractItemView::NoSelection);
+    table_->setSelectionMode(QAbstractItemView::SingleSelection);
     layout->addWidget(table_, 1);
 
     summary_ = new QLabel(this);
@@ -205,6 +375,13 @@ TimetableDialog::TimetableDialog(const Route &route, const VehicleCatalog &catal
     warnings_->setMaximumHeight(90);
     warnings_->setStyleSheet(QStringLiteral("color: #a02020;"));
     layout->addWidget(warnings_);
+
+    // Статус «изменения ещё не применены» (аудит 3.4)
+    state_label_ = new QLabel(this);
+    state_label_->setWordWrap(true);
+    state_label_->setStyleSheet(QStringLiteral("color: #a35a00;"));
+    state_label_->hide();
+    layout->addWidget(state_label_);
 
     auto *buttons = new QHBoxLayout;
     auto *remove = new QPushButton(tr("Убрать расписание"), this);
@@ -218,18 +395,43 @@ TimetableDialog::TimetableDialog(const Route &route, const VehicleCatalog &catal
     buttons->addWidget(cancel);
     layout->addLayout(buttons);
 
-    connect(table_, &QTableWidget::itemChanged, this, [this] { recompute(); });
-    connect(pick, &QPushButton::clicked, this, [this] { done(PickRequested); });
+    connect(table_, &QTableWidget::itemChanged, this, [this](QTableWidgetItem *item)
+    {
+        if (loading_)
+        {
+            return;
+        }
+
+        // Время прибытия/отправления правится прямо в ячейке
+        if (item->column() == ColArrival || item->column() == ColDeparture)
+        {
+            parseManualTime(item);
+            return;
+        }
+
+        markDirty();
+        recompute();
+    });
+    connect(pick, &QPushButton::clicked, this, [this] { emit pickRequested(); });
     connect(remove, &QPushButton::clicked, this, [this] { done(RemoveRequested); });
     connect(apply_button_, &QPushButton::clicked, this, &QDialog::accept);
     connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
     connect(def_button, &QPushButton::clicked, this, &TimetableDialog::onDefaultReserve);
+    connect(recalc_next_, &QPushButton::clicked, this, &TimetableDialog::onRecalcNext);
+    connect(recalc_all_, &QPushButton::clicked, this, &TimetableDialog::onRecalcAll);
     connect(waypoint_combo_, QOverload<int>::of(&QComboBox::activated),
             this, &TimetableDialog::onWaypointChosen);
 
-    connect(start_edit_, &QTimeEdit::timeChanged, this, &TimetableDialog::recompute);
-    connect(total_extra_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, &TimetableDialog::recompute);
+    connect(start_edit_, &QTimeEdit::timeChanged, this, [this]
+    {
+        markDirty();
+        recompute();
+    });
+    connect(total_extra_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this]
+    {
+        markDirty();
+        recompute();
+    });
 
     for (QDoubleSpinBox *s : { power_, force_, vmax_, brake_ })
     {
@@ -238,6 +440,7 @@ TimetableDialog::TimetableDialog(const Route &route, const VehicleCatalog &catal
             if (!loading_)
             {
                 markEdited();
+                markDirty();
                 recompute();
             }
         });
@@ -263,7 +466,48 @@ void TimetableDialog::setEnd(const QString &trajectory, double coord)
     state_.endTrajectory = trajectory;
     state_.endCoord = coord;
     state_.endName.clear();
+    markDirty();
     rebuildPlan();
+}
+
+//------------------------------------------------------------------------------
+// Режим таблицы «Диспетчер»: только станции и времена (аудит 3.5)
+//------------------------------------------------------------------------------
+void TimetableDialog::setSimpleMode(bool simple)
+{
+    simple_mode_ = simple;
+
+    for (int c : { ColUse, ColTrack, ColMode, ColDwell, ColExtra })
+    {
+        table_->setColumnHidden(c, simple);
+    }
+}
+
+//------------------------------------------------------------------------------
+// Категория поезда, выбранная в окне (аудит 3.8)
+//------------------------------------------------------------------------------
+int TimetableDialog::category() const
+{
+    return class_box_ != nullptr ? class_box_->currentData().toInt() : 0;
+}
+
+//------------------------------------------------------------------------------
+// Изменения ещё не применены (аудит 3.4)
+//------------------------------------------------------------------------------
+void TimetableDialog::markDirty()
+{
+    dirty_ = true;
+    updateDirtyLabel();
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+void TimetableDialog::updateDirtyLabel()
+{
+    state_label_->setText(tr("Изменения ещё не применены — нажмите «Применить», чтобы они "
+                             "попали в проект и в экспорт"));
+    state_label_->setVisible(dirty_);
 }
 
 //------------------------------------------------------------------------------
@@ -296,13 +540,48 @@ void TimetableDialog::rebuildPlan()
 {
     loading_ = true;
 
+    // Закреплённые станции задают порядок трассы («через станцию»), затем -
+    // выбранные пути прочих станций по прежнему плану
+    QVector<TripVia> vias;
+    QSet<QString> pinned;
+    QStringList pin_errors;
+
+    for (const TripPin &p : state_.pins)
+    {
+        const StationSetting ss = state_.stations.value(p.station);
+        TripVia v;
+
+        if (pinToPoint(route_, p.station,
+                       ss.track.isEmpty() ? p.track : ss.track,
+                       ss.track.isEmpty() ? p.trackCoord : ss.trackCoord, &v))
+        {
+            vias.push_back(v);
+            pinned.insert(p.station);
+        }
+        else
+        {
+            pin_errors << tr("закреплённая станция «%1»: путь не найден").arg(p.station);
+        }
+    }
+
+    for (const TripStation &ts : plan_.stations)
+    {
+        const StationSetting ss = state_.stations.value(ts.name);
+
+        if (!ss.track.isEmpty() && !pinned.contains(ts.name))
+        {
+            vias.push_back({ ss.track, ss.trackCoord });
+        }
+    }
+
     plan_ = TripPlan();
     result_ = TripResult();
 
     if (state_.hasEnd)
     {
         plan_ = buildTripPlan(route_, catalog_, scenario_, train_index_,
-                              state_.endTrajectory, state_.endCoord);
+                              state_.endTrajectory, state_.endCoord, vias);
+        plan_.warnings << pin_errors;
         end_label_->setText(tr("путь «%1», %2 м").arg(state_.endTrajectory)
                             .arg(state_.endCoord, 0, 'f', 0));
     }
@@ -338,6 +617,7 @@ void TimetableDialog::rebuildPlan()
 
     fillTable();
     recompute();
+    refreshPinControls();
 }
 
 //------------------------------------------------------------------------------
@@ -376,16 +656,32 @@ void TimetableDialog::fillTable()
         km->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         table_->setItem(r, ColKm, km);
 
-        for (int c : { ColArrival, ColDeparture, ColSpeed })
+        for (int c : { ColArrival, ColDeparture, ColRoute, ColSpeed })
         {
             auto *it = new QTableWidgetItem;
-            it->setFlags(Qt::ItemIsEnabled);
             it->setTextAlignment(Qt::AlignCenter);
             table_->setItem(r, c, it);
+
+            // Время прибытия/отправления правится прямо в ячейке
+            if (c == ColArrival || c == ColDeparture)
+            {
+                it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsEditable);
+                it->setToolTip(tr("Впишите время ЧЧ:ММ, чтобы закрепить его "
+                                  "(очистите ячейку - вернётся авторасчёт)"));
+            }
+            else
+            {
+                it->setFlags(Qt::ItemIsEnabled);
+            }
         }
 
         if (!fixed)
         {
+            auto *track = new QComboBox;
+            track->addItem(tr("авто"));
+            table_->setCellWidget(r, ColTrack, track);
+            connect(track, QOverload<int>::of(&QComboBox::activated), this, [this] { onTrackChosen(); });
+
             auto *mode = new QComboBox;
             mode->addItems({ tr("Проезд"), tr("Остановка") });
             table_->setCellWidget(r, ColMode, mode);
@@ -402,9 +698,21 @@ void TimetableDialog::fillTable()
             extra->setSingleStep(0.5);
             table_->setCellWidget(r, ColExtra, extra);
 
-            connect(mode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this] { recompute(); });
-            connect(dwell, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this] { recompute(); });
-            connect(extra, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this] { recompute(); });
+            connect(mode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]
+            {
+                markDirty();
+                recompute();
+            });
+            connect(dwell, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this]
+            {
+                markDirty();
+                recompute();
+            });
+            connect(extra, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this]
+            {
+                markDirty();
+                recompute();
+            });
         }
         else
         {
@@ -419,8 +727,27 @@ void TimetableDialog::fillTable()
                 extra->setSingleStep(0.5);
                 extra->setEnabled(true);
                 extra->setValue(state_.endExtraMin);
-                connect(extra, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this] { recompute(); });
+                connect(extra, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this]
+                {
+                    markDirty();
+                    recompute();
+                });
                 table_->setCellWidget(r, ColExtra, extra);
+            }
+        }
+
+        // Крайние строки: время начала задается полем «Отправление»,
+        // у конечной станции правится только прибытие
+        if (fixed)
+        {
+            if (station == -1)
+            {
+                table_->item(r, ColArrival)->setFlags(Qt::ItemIsEnabled);
+                table_->item(r, ColDeparture)->setFlags(Qt::ItemIsEnabled);
+            }
+            else
+            {
+                table_->item(r, ColDeparture)->setFlags(Qt::ItemIsEnabled);
             }
         }
 
@@ -444,6 +771,31 @@ void TimetableDialog::fillTable()
 
         table_->item(r, ColUse)->setCheckState(ss.included ? Qt::Checked : Qt::Unchecked);
         qobject_cast<QComboBox *>(table_->cellWidget(r, ColMode))->setCurrentIndex(ss.stop ? 1 : 0);
+
+        if (auto *track = qobject_cast<QComboBox *>(table_->cellWidget(r, ColTrack)))
+        {
+            for (const StationData &sd : route_.stations())
+            {
+                if (sd.name != st.name)
+                {
+                    continue;
+                }
+
+                for (const StationTrack &t : stationTracks(route_, sd.pos))
+                {
+                    track->addItem(t.trajectory, t.trajectory);
+                    track->setItemData(track->count() - 1, t.coord, Qt::UserRole + 1);
+
+                    if (t.trajectory == ss.track)
+                    {
+                        track->setCurrentIndex(track->count() - 1);
+                    }
+                }
+
+                break;
+            }
+        }
+
         qobject_cast<QDoubleSpinBox *>(table_->cellWidget(r, ColDwell))->setValue(ss.dwellMin);
         qobject_cast<QDoubleSpinBox *>(table_->cellWidget(r, ColExtra))->setValue(ss.extraMin);
     }
@@ -479,14 +831,258 @@ void TimetableDialog::readTable()
             continue;
         }
 
+        // Ручные времена меняются только правкой ячеек времени - сохраняются
+        const StationSetting old = state_.stations.value(plan_.stations[st].name);
+
         StationSetting ss;
         ss.included = table_->item(r, ColUse)->checkState() == Qt::Checked;
         ss.stop = qobject_cast<QComboBox *>(table_->cellWidget(r, ColMode))->currentIndex() == 1;
         ss.dwellMin = static_cast<int>(qobject_cast<QDoubleSpinBox *>(table_->cellWidget(r, ColDwell))->value());
         ss.extraMin = qobject_cast<QDoubleSpinBox *>(table_->cellWidget(r, ColExtra))->value();
+        ss.manualArrival = old.manualArrival;
+        ss.manualDeparture = old.manualDeparture;
+
+        if (auto *track = qobject_cast<QComboBox *>(table_->cellWidget(r, ColTrack)))
+        {
+            if (track->currentIndex() > 0)
+            {
+                ss.track = track->currentData().toString();
+                ss.trackCoord = track->currentData(Qt::UserRole + 1).toDouble();
+            }
+        }
 
         state_.stations.insert(plan_.stations[st].name, ss);
     }
+}
+
+//------------------------------------------------------------------------------
+// Выбран другой путь станции: маршрут перестраивается через него
+//------------------------------------------------------------------------------
+void TimetableDialog::onTrackChosen()
+{
+    markDirty();
+    readTable();
+    rebuildPlan();
+}
+
+//------------------------------------------------------------------------------
+// Время, вписанное в ячейку прибытия/отправления: строка становится ручной,
+// последующие строки авторасчёта пересчитываются от неё (якорь)
+//------------------------------------------------------------------------------
+void TimetableDialog::parseManualTime(QTableWidgetItem *item)
+{
+    const int r = item->row();
+    const int st = row_station_.value(r, -99);
+
+    bool ok = false;
+    const int sec = parseClockText(item->text(), &ok);
+
+    // Начало: время отправления задается полем «Отправление»;
+    // нераспознанное значение - вернуть прежний текст
+    if (st == -1 || !ok || (st == -2 && item->column() == ColDeparture))
+    {
+        recompute();
+        return;
+    }
+
+    if (st == -2)
+    {
+        state_.endManualArrival = sec;
+        markDirty();
+        recompute();
+        return;
+    }
+
+    if (st < 0 || st >= plan_.stations.size())
+    {
+        return;
+    }
+
+    // Правка времени в выключенной строке включает её в график
+    if (table_->item(r, ColUse)->checkState() != Qt::Checked)
+    {
+        table_->item(r, ColUse)->setCheckState(Qt::Checked);
+    }
+
+    const QString name = plan_.stations[st].name;
+    StationSetting ss = state_.stations.value(name);
+
+    if (item->column() == ColArrival)
+    {
+        ss.manualArrival = sec;
+    }
+    else
+    {
+        ss.manualDeparture = sec;
+    }
+
+    state_.stations.insert(name, ss);
+    markDirty();
+    recompute();
+}
+
+//------------------------------------------------------------------------------
+// Вернуть строку к авторасчёту
+//------------------------------------------------------------------------------
+bool TimetableDialog::clearManualRow(int row, int station)
+{
+    if (station == -2)
+    {
+        if (state_.endManualArrival < 0)
+        {
+            return false;
+        }
+
+        state_.endManualArrival = -1;
+        return true;
+    }
+
+    if (station < 0 || station >= plan_.stations.size())
+    {
+        return false;
+    }
+
+    const QString name = plan_.stations[station].name;
+    StationSetting ss = state_.stations.value(name);
+
+    if (ss.manualArrival < 0 && ss.manualDeparture < 0)
+    {
+        return false;
+    }
+
+    ss.manualArrival = -1;
+    ss.manualDeparture = -1;
+    state_.stations.insert(name, ss);
+
+    return true;
+}
+
+//------------------------------------------------------------------------------
+// «Пересчитать далее»: от строки с курсором и ниже - к авторасчёту
+//------------------------------------------------------------------------------
+void TimetableDialog::onRecalcNext()
+{
+    const int r0 = std::max(0, table_->currentRow());
+    bool changed = false;
+
+    for (int r = 0; r < table_->rowCount(); ++r)
+    {
+        if (r >= r0)
+        {
+            changed |= clearManualRow(r, row_station_.value(r, -99));
+        }
+    }
+
+    if (changed)
+    {
+        markDirty();
+        recompute();
+    }
+}
+
+//------------------------------------------------------------------------------
+// «Пересчитать всё»: весь график - к авторасчёту
+//------------------------------------------------------------------------------
+void TimetableDialog::onRecalcAll()
+{
+    bool changed = false;
+
+    for (int r = 0; r < table_->rowCount(); ++r)
+    {
+        changed |= clearManualRow(r, row_station_.value(r, -99));
+    }
+
+    if (changed)
+    {
+        markDirty();
+        recompute();
+    }
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+int TimetableDialog::pinIndex(const QString &station) const
+{
+    for (int i = 0; i < state_.pins.size(); ++i)
+    {
+        if (state_.pins[i].station == station)
+        {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+//------------------------------------------------------------------------------
+// Кнопка «Закрепить/Убрать» у выбранной в списке станции
+//------------------------------------------------------------------------------
+void TimetableDialog::onPinButton()
+{
+    const QString name = pin_combo_->currentText();
+
+    if (name.isEmpty())
+    {
+        return;
+    }
+
+    const int idx = pinIndex(name);
+
+    if (idx >= 0)
+    {
+        state_.pins.removeAt(idx);
+    }
+    else
+    {
+        TripPin p;
+        p.station = name;
+        state_.pins.push_back(p);
+    }
+
+    markDirty();
+    rebuildPlan();
+}
+
+//------------------------------------------------------------------------------
+// Щелчок по закреплённой станции в списке: выбрать её в списке станций
+//------------------------------------------------------------------------------
+void TimetableDialog::onPinSelected()
+{
+    QListWidgetItem *it = pin_list_->currentItem();
+
+    if (it != nullptr)
+    {
+        pin_combo_->setCurrentText(it->data(Qt::UserRole).toString());
+    }
+}
+
+//------------------------------------------------------------------------------
+// Список закреплённых станций и подпись кнопки «Закрепить/Убрать»
+//------------------------------------------------------------------------------
+void TimetableDialog::refreshPinControls()
+{
+    QSignalBlocker block(pin_list_);
+
+    pin_list_->clear();
+
+    for (const TripPin &p : state_.pins)
+    {
+        const StationSetting ss = state_.stations.value(p.station);
+        QString text = p.station;
+
+        if (!ss.track.isEmpty())
+        {
+            text += tr(" — путь «%1»").arg(ss.track);
+        }
+
+        auto *item = new QListWidgetItem(text, pin_list_);
+        item->setData(Qt::UserRole, p.station);
+    }
+
+    pin_list_->setVisible(!state_.pins.isEmpty());
+    pin_button_->setText(pinIndex(pin_combo_->currentText()) >= 0 ? tr("Убрать")
+                                                                  : tr("Закрепить"));
 }
 
 //------------------------------------------------------------------------------
@@ -518,6 +1114,8 @@ TripOptions TimetableDialog::options() const
                 o.endExtraMin = e->value();
             }
 
+            o.endManualArrival = state_.endManualArrival;
+
             continue;
         }
 
@@ -536,6 +1134,11 @@ TripOptions TimetableDialog::options() const
 
         sp.dwellSec = static_cast<int>(qobject_cast<QDoubleSpinBox *>(table_->cellWidget(r, ColDwell))->value()) * 60;
         sp.extraMin = qobject_cast<QDoubleSpinBox *>(table_->cellWidget(r, ColExtra))->value();
+
+        const StationSetting ss = state_.stations.value(plan_.stations[st].name);
+        sp.manualArrival = ss.manualArrival;
+        sp.manualDeparture = ss.manualDeparture;
+
         o.stops.push_back(sp);
     }
 
@@ -594,6 +1197,46 @@ void TimetableDialog::recompute()
 }
 
 //------------------------------------------------------------------------------
+// Маршруты, которые построит автопилот игры по рассчитанному расписанию, и
+// светофоры, которые он откроет. Подход и уход берутся так же, как при экспорте
+//------------------------------------------------------------------------------
+void TimetableDialog::updateRouteReport()
+{
+    route_report_ = AutopilotReport();
+    route_approach_.clear();
+    route_removal_.clear();
+
+    const QVector<TimetableStation> &sts = result_.timetable.stations;
+
+    if (sts.size() < 2)
+    {
+        return;
+    }
+
+    PlacedTrain probe = scenario_.trains()[train_index_];
+    probe.timetable = result_.timetable;
+
+    timetableApproachRemoval(route_, probe, &route_approach_, &route_removal_);
+
+    QVector<AutoStation> as;
+
+    for (int k = 0; k < sts.size(); ++k)
+    {
+        AutoStation a;
+
+        a.name = sts[k].name;
+        a.target = sts[k].targetTrajectory;
+        a.approach = sts[k].approachTrajectory.isEmpty() ? route_approach_.value(k)
+                                                         : sts[k].approachTrajectory;
+        a.removal = sts[k].removalTrajectory.isEmpty() ? route_removal_.value(k)
+                                                       : sts[k].removalTrajectory;
+        as.push_back(a);
+    }
+
+    route_report_ = simulateAutopilot(route_, as);
+}
+
+//------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
 void TimetableDialog::showResult()
@@ -603,19 +1246,122 @@ void TimetableDialog::showResult()
     if (!result_.ok)
     {
         summary_->setText(QString());
-        warnings_->setPlainText(plan_.ok ? result_.error : plan_.error);
+        warnings_->setPlainText(QStringLiteral("✖ ") + (plan_.ok ? result_.error : plan_.error));
         apply_button_->setEnabled(false);
+        emit tripChanged({}, {});
+        emit signalMarksChanged({});
 
         for (int r = 0; r < table_->rowCount(); ++r)
         {
-            for (int c : { ColArrival, ColDeparture, ColSpeed })
+            for (int c : { ColArrival, ColDeparture, ColRoute, ColSpeed })
             {
                 table_->item(r, c)->setText(QString());
+                table_->item(r, c)->setToolTip(QString());
+                table_->item(r, c)->setBackground(QBrush());
             }
         }
 
         return;
     }
+
+    // Как выполнит график автопилот игры: столбец «Маршрут» и подсветка светофоров
+    updateRouteReport();
+
+    const QColor normal_color = table_->palette().color(QPalette::WindowText);
+    const QColor red(170, 30, 30);
+    QVector<SignalMark> marks;
+
+    auto fill_route = [&](int r, int k)
+    {
+        QTableWidgetItem *cell = table_->item(r, ColRoute);
+        QTableWidgetItem *name_cell = table_->item(r, ColName);
+        const QVector<TimetableStation> &sts = result_.timetable.stations;
+
+        if (route_report_.dir == 0 || route_report_.rows.isEmpty() || k < 0 || k >= sts.size())
+        {
+            cell->setText(tr("не построится"));
+            cell->setForeground(red);
+            cell->setToolTip(route_report_.problems.join(QLatin1Char('\n')));
+            name_cell->setForeground(red);
+            return;
+        }
+
+        const StationRouteCheck &rc = route_report_.rows[k];
+
+        QStringList parts;
+
+        // Приём: маршрут строится, когда поезд вступает на подход
+        if (k > 0)
+        {
+            if (!rc.arrivalOk)
+            {
+                parts << tr("приём не построится");
+            }
+            else if (rc.arrivalSignals.isEmpty())
+            {
+                parts << tr("приём: светофоров нет");
+            }
+            else
+            {
+                const int t = enterTime(result_.timetable.samples, route_approach_.value(k),
+                                        sts[k].arrival);
+                parts << tr("приём «%1» в %2").arg(rc.arrivalSignals.join(QStringLiteral(", ")),
+                                                   formatClock(t));
+            }
+        }
+
+        // Отправление: маршрут открывается ко времени отправления по графику
+        if (k + 1 < sts.size())
+        {
+            if (!rc.departureOk)
+            {
+                parts << tr("отправление не построится");
+            }
+            else if (rc.departureSignals.isEmpty())
+            {
+                parts << tr("отправление: светофоров нет");
+            }
+            else
+            {
+                parts << tr("отправление «%1» в %2")
+                            .arg(rc.departureSignals.join(QStringLiteral(", ")),
+                                 formatClock(sts[k].departure));
+            }
+        }
+
+        cell->setText(parts.join(QStringLiteral("; ")));
+
+        const bool bad = !rc.arrivalOk || !rc.departureOk || !rc.problems.isEmpty();
+
+        cell->setForeground(bad ? red : normal_color);
+        name_cell->setForeground(bad ? red : normal_color);
+        cell->setToolTip(rc.problems.isEmpty()
+                         ? tr("Оценка: маршрут приёма строится при вступлении на подход, "
+                              "отправления - ко времени отправления по графику")
+                         : rc.problems.join(QLatin1Char('\n')));
+
+        for (const RouteSignalMark &m : rc.arrivalMarks)
+        {
+            SignalMark s;
+
+            s.sw = m.sw;
+            s.liter = m.liter;
+            s.station = m.station;
+            s.problem = bad;
+            marks.push_back(s);
+        }
+
+        for (const RouteSignalMark &m : rc.departureMarks)
+        {
+            SignalMark s;
+
+            s.sw = m.sw;
+            s.liter = m.liter;
+            s.station = m.station;
+            s.problem = bad;
+            marks.push_back(s);
+        }
+    };
 
     // Имена начала и конца по умолчанию
     for (int r = 0; r < table_->rowCount(); ++r)
@@ -624,14 +1370,18 @@ void TimetableDialog::showResult()
         QString name = table_->item(r, ColName)->text();
 
         const TripRow *row = nullptr;
+        int k = -1;
+        int idx = 0;
 
         if (st == -1)
         {
             row = &result_.rows.first();
+            k = 0;
         }
         else if (st == -2)
         {
             row = &result_.rows.last();
+            k = result_.rows.size() - 1;
         }
         else
         {
@@ -640,8 +1390,11 @@ void TimetableDialog::showResult()
                 if (std::abs(tr.s - plan_.stations[st].s) < 1e-6 && tr.name == plan_.stations[st].name)
                 {
                     row = &tr;
+                    k = idx;
                     break;
                 }
+
+                ++idx;
             }
         }
 
@@ -652,9 +1405,11 @@ void TimetableDialog::showResult()
 
         if (row == nullptr)
         {
-            for (int c : { ColArrival, ColDeparture, ColSpeed })
+            for (int c : { ColArrival, ColDeparture, ColRoute, ColSpeed })
             {
                 table_->item(r, c)->setText(QStringLiteral("—"));
+                table_->item(r, c)->setBackground(QBrush());
+                table_->item(r, c)->setForeground(normal_color);
             }
 
             continue;
@@ -663,9 +1418,34 @@ void TimetableDialog::showResult()
         const bool first = (st == -1);
         const bool last = (st == -2);
 
-        table_->item(r, ColArrival)->setText(first ? QString() : formatClock(row->arrival));
-        table_->item(r, ColDeparture)->setText(last ? QString() : formatClock(row->departure));
+        QTableWidgetItem *arr_cell = table_->item(r, ColArrival);
+        QTableWidgetItem *dep_cell = table_->item(r, ColDeparture);
+
+        arr_cell->setText(first ? QString() : clockText(row->arrival));
+        dep_cell->setText(last ? QString() : clockText(row->departure));
         table_->item(r, ColSpeed)->setText(QString::number(row->speedKmh, 'f', 0));
+
+        // Ручные времена подсвечиваются; противоречивые строки - красным
+        const QColor manual_bg(255, 246, 205);
+        const bool times_bad = (row->departure < row->arrival)
+                || (k > 0 && row->arrival < result_.rows[k - 1].departure);
+
+        arr_cell->setBackground(row->manualArrival ? QBrush(manual_bg) : QBrush());
+        dep_cell->setBackground(row->manualDeparture ? QBrush(manual_bg) : QBrush());
+
+        if (times_bad)
+        {
+            arr_cell->setForeground(red);
+            dep_cell->setForeground(red);
+            arr_cell->setToolTip(tr("Время противоречит соседним строкам графика"));
+        }
+        else
+        {
+            arr_cell->setForeground(normal_color);
+            dep_cell->setForeground(normal_color);
+        }
+
+        fill_route(r, k);
     }
 
     const TripRow &end = result_.rows.last();
@@ -677,8 +1457,17 @@ void TimetableDialog::showResult()
                       .arg(formatClock(end.arrival))
                       .arg(minutesText(end.arrival - result_.timetable.startTime)));
 
-    warnings_->setPlainText(result_.warnings.join(QLatin1Char('\n')));
+    QStringList warned;
+
+    for (const QString &line : result_.warnings)
+    {
+        warned << warnIcon(line);
+    }
+
+    warnings_->setPlainText(warned.join(QLatin1Char('\n')));
     apply_button_->setEnabled(true);
+    emit signalMarksChanged(marks);
+    emit tripChanged(plan_.path.segments, result_.timetable.stations);
 }
 
 //------------------------------------------------------------------------------

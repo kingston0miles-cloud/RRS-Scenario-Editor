@@ -1,6 +1,10 @@
 #include    <QtTest>
 
+#include    <QDir>
+#include    <QFile>
+#include    <QFileInfo>
 #include    <QImage>
+#include    <QTemporaryDir>
 
 #include    "catalog/vehicle-catalog.h"
 #include    "ui/rolling-stock-panel.h"
@@ -37,6 +41,7 @@ private slots:
     void showsHintWithoutCatalog();
     void showsRealCatalog();
     void filterNarrowsRows();
+    void tabsSwitchRows();
 };
 
 //------------------------------------------------------------------------------
@@ -131,6 +136,68 @@ void TestPanel::filterNarrowsRows()
     panel.setFilter("");
     QCOMPARE(panel.visibleVehicleCount(), 10);
     QCOMPARE(panel.visibleTrainCount(), 10);
+}
+
+//------------------------------------------------------------------------------
+// Вкладки «Единицы» / «Готовые составы» (аудит 2.7): переключаются кнопками,
+// selectTrain сам переходит на вкладку составов
+//------------------------------------------------------------------------------
+void TestPanel::tabsSwitchRows()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = dir.path();
+
+    // Минимальный каталог: две единицы и один готовый состав (как в test-export)
+    const auto write = [root](const QString &rel, const QString &body)
+    {
+        QFile f(QDir(root).filePath(rel));
+        QDir().mkpath(QFileInfo(f).absolutePath());
+        QVERIFY2(f.open(QIODevice::WriteOnly), qPrintable(rel));
+        f.write(body.toUtf8());
+    };
+
+    write(QStringLiteral("cfg/vehicles/locos/L.xml"),
+          QStringLiteral("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Config>\n<Vehicle>\n"
+                         "<EmptyMass>100000</EmptyMass>\n<PayloadMass>0</PayloadMass>\n"
+                         "<Length>20</Length>\n<AutopilotModule></AutopilotModule>\n"
+                         "</Vehicle>\n</Config>\n"));
+    write(QStringLiteral("cfg/vehicles/cars/W.xml"),
+          QStringLiteral("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Config>\n<Vehicle>\n"
+                         "<EmptyMass>10000</EmptyMass>\n<PayloadMass>50000</PayloadMass>\n"
+                         "<Length>10</Length>\n<AutopilotModule></AutopilotModule>\n"
+                         "</Vehicle>\n</Config>\n"));
+    write(QStringLiteral("cfg/trains/poezd.xml"),
+          QStringLiteral("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Config>\n<Common>\n"
+                         "<Title>t</Title>\n</Common>\n"
+                         "<Vehicle>\n<ModuleDir>locos</ModuleDir>\n<Module>L</Module>\n"
+                         "<ModuleConfigDir>locos</ModuleConfigDir>\n<ModuleConfig>L</ModuleConfig>\n"
+                         "<IsOrientationForward>1</IsOrientationForward>\n<Count>1</Count>\n"
+                         "<PayloadCoeff>0.0</PayloadCoeff>\n</Vehicle>\n"
+                         "<Vehicle>\n<ModuleDir>cars</ModuleDir>\n<Module>W</Module>\n"
+                         "<ModuleConfigDir>cars</ModuleConfigDir>\n<ModuleConfig>W</ModuleConfig>\n"
+                         "<IsOrientationForward>1</IsOrientationForward>\n<Count>2</Count>\n"
+                         "<PayloadCoeff>0.0</PayloadCoeff>\n</Vehicle>\n"
+                         "</Config>\n"));
+
+    VehicleCatalog c;
+    QVERIFY2(c.load(root), qPrintable(c.errorString()));
+
+    RollingStockPanel panel;
+    panel.setCatalog(&c);
+
+    // По умолчанию вкладка «Единицы»
+    QCOMPARE(panel.activeTab(), 0);
+
+    // Переключение вкладок
+    panel.setActiveTab(1);
+    QCOMPARE(panel.activeTab(), 1);
+    panel.setActiveTab(0);
+    QCOMPARE(panel.activeTab(), 0);
+
+    // selectTrain сам переходит на вкладку «Готовые составы»
+    QVERIFY(panel.selectTrain(QStringLiteral("poezd")));
+    QCOMPARE(panel.activeTab(), 1);
 }
 
 QTEST_MAIN(TestPanel)

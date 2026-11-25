@@ -96,6 +96,7 @@ private slots:
     void planStationsAndLimits();
     void runRespectsLimitAndPhysics();
     void stopsAndMargins();
+    void manualTimes();
     void conflictsWithOtherTrains();
     void noTractionWarning();
 };
@@ -230,6 +231,83 @@ void TestTrip::stopsAndMargins()
     // Время по умолчанию с запасом
     QVERIFY(defaultReserveMin(1000.0) >= 2.0);
     QCOMPARE(formatClock(3661), QString("01:01:01"));
+}
+
+//------------------------------------------------------------------------------
+// Ручные времена: строка-якорь идёт в расписание как введена, последующие
+// строки авторасчёта пересчитываются от неё
+//------------------------------------------------------------------------------
+void TestTrip::manualTimes()
+{
+    Scenario sc;
+    sc.add(makeTrain("P1", "T1", 0.0, 1));
+
+    TripPlan p = plan(sc);
+    QVERIFY2(p.ok, qPrintable(p.error));
+
+    TripOptions o;
+    o.startTime = 10 * 3600;
+
+    // База для сравнения перегонов: чистый авторасчёт без станций
+    const TripResult base = computeTrip(p, o, route_, sc, 0);
+    QVERIFY2(base.ok, qPrintable(base.error));
+    QCOMPARE(base.rows.size(), 2);
+
+    // Остановка на B с ручным прибытием 11:30
+    StopSpec b;
+    b.station = 1;
+    b.mode = StopMode::Stop;
+    b.dwellSec = 120;
+    b.manualArrival = 11 * 3600 + 30 * 60;
+    o.stops.push_back(b);
+
+    const TripResult r = computeTrip(p, o, route_, sc, 0);
+    QVERIFY2(r.ok, qPrintable(r.error));
+    QCOMPARE(r.rows.size(), 3);
+
+    // Ручное время идёт в расписание как введено (без округления и запаса)
+    QCOMPARE(r.rows[1].arrival, 11 * 3600 + 30 * 60);
+    QVERIFY(r.rows[1].manualArrival);
+    QVERIFY(!r.rows[1].manualDeparture);
+
+    // Отправление - авторасчёт от ручного якоря
+    QCOMPARE(r.rows[1].departure, r.rows[1].arrival + 120);
+
+    // Конечная станция пересчитана от якоря: перегон тот же, что в авторасчёте
+    TripOptions ref = o;
+    ref.stops[0].manualArrival = -1;
+    const TripResult rr = computeTrip(p, ref, route_, sc, 0);
+    QVERIFY2(rr.ok, qPrintable(rr.error));
+
+    // Авторасчёт приходит раньше, чем закреплённое 11:30
+    QVERIFY(rr.rows[1].arrival < r.rows[1].arrival);
+    QVERIFY(!rr.rows[1].manualArrival);
+    QVERIFY(qAbs((r.rows[2].arrival - r.rows[1].departure)
+                 - (rr.rows[2].arrival - rr.rows[1].departure)) <= 60);
+
+    // Ручное отправление: пять минут стоянки вместо двух, далее - от него
+    o.stops[0].manualDeparture = 11 * 3600 + 35 * 60;
+    const TripResult dep = computeTrip(p, o, route_, sc, 0);
+    QCOMPARE(dep.rows[1].departure, 11 * 3600 + 35 * 60);
+    QVERIFY(dep.rows[1].manualDeparture);
+    QVERIFY(qAbs((dep.rows[2].arrival - dep.rows[1].departure)
+                 - (r.rows[2].arrival - r.rows[1].departure)) <= 60);
+
+    // Ручное прибытие раньше отправления со станции начала: строка сохраняется,
+    // но редактор предупреждает
+    o.stops[0].manualArrival = 9 * 3600;
+    o.stops[0].manualDeparture = -1;
+    const TripResult backwards = computeTrip(p, o, route_, sc, 0);
+    QCOMPARE(backwards.rows[1].arrival, 9 * 3600);
+    QVERIFY(backwards.warnings.join(QLatin1Char(' ')).contains(QStringLiteral("раньше")));
+
+    // Ручное время прибытия на конечной станции
+    o.stops[0].manualArrival = -1;
+    o.endManualArrival = 13 * 3600;
+    const TripResult end = computeTrip(p, o, route_, sc, 0);
+    QCOMPARE(end.rows.last().arrival, 13 * 3600);
+    QVERIFY(end.rows.last().manualArrival);
+    QVERIFY(end.warnings.isEmpty());
 }
 
 void TestTrip::conflictsWithOtherTrains()

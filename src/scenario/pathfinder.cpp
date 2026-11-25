@@ -252,4 +252,105 @@ PathResult findPath(const Route &route, const QString &traj0, double coord0, int
     return res;
 }
 
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+GameRoute gameRoute(const Route &route, const QString &start, const QString &target, int dir)
+{
+    GameRoute res;
+
+    if (route.find(start) == nullptr || route.find(target) == nullptr)
+    {
+        return res;
+    }
+
+    const int d0 = dir < 0 ? -1 : 1;
+
+    if (start == target)
+    {
+        GameRouteStep st;
+        st.trajectory = start;
+        st.dir = d0;
+        res.steps.push_back(st);
+        res.found = true;
+        return res;
+    }
+
+    struct Prev
+    {
+        QString key;
+        QString sw;
+        bool plus = true;
+    };
+
+    auto key = [](const QString &t, int d)
+    {
+        return t + (d > 0 ? QStringLiteral("|+") : QStringLiteral("|-"));
+    };
+
+    QHash<QString, Prev> visited;
+    std::queue<std::pair<QString, int>> queue;
+
+    visited.insert(key(start, d0), Prev());
+    queue.push({ start, d0 });
+
+    QString goal;
+
+    while (!queue.empty() && goal.isEmpty())
+    {
+        const auto [traj, d] = queue.front();
+        queue.pop();
+
+        for (const Route::Endpoint &e : route.crossings(traj, d > 0))
+        {
+            if (e.trajectory == traj)
+            {
+                continue;
+            }
+
+            const int nd = e.atEnd ? -1 : 1;
+            const QString k = key(e.trajectory, nd);
+
+            if (visited.contains(k))
+            {
+                continue;
+            }
+
+            Prev p;
+            p.key = key(traj, d);
+            p.sw = e.switchName;
+            p.plus = e.plus;
+            visited.insert(k, p);
+
+            if (e.trajectory == target)
+            {
+                goal = k;
+                break;
+            }
+
+            queue.push({ e.trajectory, nd });
+        }
+    }
+
+    if (goal.isEmpty())
+    {
+        return res;
+    }
+
+    for (QString k = goal; !k.isEmpty(); k = visited.value(k).key)
+    {
+        GameRouteStep st;
+        st.trajectory = k.left(k.size() - 2);
+        st.dir = k.endsWith(QLatin1String("|+")) ? 1 : -1;
+        st.viaSwitch = visited.value(k).sw;
+        st.viaPlus = visited.value(k).plus;
+        res.steps.push_back(st);
+    }
+
+    std::reverse(res.steps.begin(), res.steps.end());
+    res.found = true;
+
+    return res;
+}
+
 } // namespace rse

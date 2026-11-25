@@ -20,6 +20,9 @@ struct ExportOptions
 
     /// Заменить существующий каталог сценария (файлы main.lua, README.md, timetable)
     bool overwrite = false;
+
+    /// Триггеры маршрутов по расписаниям с очерёдностью по категории поезда
+    bool autoTriggers = true;
 };
 
 //------------------------------------------------------------------------------
@@ -50,7 +53,28 @@ struct ExportPlan
     QStringList errors;
     QStringList warnings;
 
+    /// main.lua в каталоге сценария изменён со времени прошлого экспорта
+    /// (правки вручную будут потеряны при записи)
+    bool mainEdited = false;
+
+    /// Хеш существующего main.lua (пусто - файла нет)
+    QString existingMainSha256;
+
+    /// Имя резервной копии существующего main.lua при перезаписи (пусто - файла нет;
+    /// копия создаётся, только если новая версия отличается от старой)
+    QString mainBackupName;
+
     QVector<ExportTrain> trains;
+
+    /// События, созданные редактором для продолжений: переименование поезда после сцепки
+    QVector<ScenarioEvent> formationEvents;
+
+    /// Триггеры по расписаниям (маршруты, очерёдность по категории поезда)
+    QVector<ScenarioEvent> autoEvents;
+
+    /// Поезд -> по станциям: подход / уход в расписании не писать (маршрут строит триггер)
+    QHash<QString, QVector<bool>> clearApproach;
+    QHash<QString, QVector<bool>> clearRemoval;
 
     /// Каталог сценария
     QString scenarioDir;
@@ -66,6 +90,17 @@ struct ExportPlan
         return errors.isEmpty();
     }
 };
+
+/// Предупреждения экспорта, разложенные по важности: stop - поезд может не поехать,
+/// jam - возможные заторы и ожидания, info - остальное
+struct ExportWarningGroups
+{
+    QStringList stop;
+    QStringList jam;
+    QStringList info;
+};
+
+ExportWarningGroups groupExportWarnings(const QStringList &warnings);
 
 /// Проверить сценарий и подготовить экспорт, ничего не записывая
 ExportPlan planExport(const Route &route, const VehicleCatalog &catalog, const Scenario &scenario,

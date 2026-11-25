@@ -1,4 +1,5 @@
 #include    "scenario/trip.h"
+#include    "scenario/stationroute.h"
 
 #include    <QObject>
 #include    <QtMath>
@@ -86,6 +87,17 @@ void spanOf(double coord, int dir, double length, double *lo, double *hi)
     }
 }
 
+/// Продолжение и его локомотив с вагонами: на путях это одни и те же места
+bool related(const PlacedTrain &a, const PlacedTrain &b)
+{
+    auto link = [](const PlacedTrain &c, const PlacedTrain &x)
+    {
+        return c.isContinuation() && (c.formedFrom == x.name || c.formedWagons == x.name);
+    };
+
+    return link(a, b) || link(b, a) || (a.isContinuation() && b.isContinuation());
+}
+
 } // namespace
 
 //------------------------------------------------------------------------------
@@ -118,10 +130,53 @@ QString formatClock(int sec)
 }
 
 //------------------------------------------------------------------------------
+// Точка пути для закреплённой станции: выбранный путь или ближайший к станции
+//------------------------------------------------------------------------------
+bool pinToPoint(const Route &route, const QString &station, const QString &track,
+                double trackCoord, TripVia *via)
+{
+    const StationData *sd = nullptr;
+
+    for (const StationData &s : route.stations())
+    {
+        if (s.name == station)
+        {
+            sd = &s;
+            break;
+        }
+    }
+
+    if (sd == nullptr)
+    {
+        return false;
+    }
+
+    if (!track.isEmpty())
+    {
+        via->trajectory = track;
+        via->coord = trackCoord;
+        return true;
+    }
+
+    const QVector<StationTrack> tracks = stationTracks(route, sd->pos, 500.0);
+
+    if (tracks.isEmpty())
+    {
+        return false;
+    }
+
+    via->trajectory = tracks.first().trajectory;
+    via->coord = tracks.first().coord;
+
+    return true;
+}
+
+//------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
 TripPlan buildTripPlan(const Route &route, const VehicleCatalog &catalog, const Scenario &scenario,
-                       int train_index, const QString &traj, double coord)
+                       int train_index, const QString &traj, double coord,
+                       const QVector<TripVia> &vias)
 {
     TripPlan plan;
 
@@ -133,7 +188,40 @@ TripPlan buildTripPlan(const Route &route, const VehicleCatalog &catalog, const 
 
     const PlacedTrain &train = scenario.trains()[train_index];
 
-    plan.path = findPath(route, train.trajectory, train.coord, train.dir, traj, coord);
+    // Путь строится отрезками через выбранные пути станций
+    QVector<TripVia> points = vias;
+    points.push_back({ traj, coord });
+
+    QString from_traj = train.trajectory;
+    double from_coord = train.coord;
+    int from_dir = train.dir;
+
+    plan.path.found = true;
+
+    for (const TripVia &v : points)
+    {
+        const PathResult leg = findPath(route, from_traj, from_coord, from_dir, v.trajectory, v.coord);
+
+        if (!leg.found)
+        {
+            plan.path = leg;
+            break;
+        }
+
+        for (const PathSegment &seg : leg.segments)
+        {
+            plan.path.segments.push_back(seg);
+        }
+
+        plan.path.length += leg.length;
+        plan.path.wrongWay = plan.path.wrongWay || leg.wrongWay;
+        plan.path.switchesCrossed += leg.switchesCrossed;
+        plan.path.switchNames << leg.switchNames;
+
+        from_traj = v.trajectory;
+        from_coord = v.coord;
+        from_dir = leg.segments.isEmpty() ? from_dir : leg.segments.last().dir;
+    }
 
     if (!plan.path.found)
     {
@@ -160,7 +248,7 @@ TripPlan buildTripPlan(const Route &route, const VehicleCatalog &catalog, const 
     if (plan.path.switchesCrossed > 0)
     {
         plan.warnings << QObject::tr("Стрелок на пути: %1. Их нужно перевести триггерами "
-                                     "сценария (этап «Триггеры»)").arg(plan.path.switchesCrossed);
+                                     "сценария (автопилот)").arg(plan.path.switchesCrossed);
     }
 
     // Профиль пути
@@ -252,7 +340,7 @@ TripPlan buildTripPlan(const Route &route, const VehicleCatalog &catalog, const 
 
         const PlacedTrain &other = scenario.trains()[i];
 
-        if (other.timetable.valid)
+        if (other.timetable.valid || related(train, other) || other.isVirtual())
         {
             continue;
         }
@@ -328,6 +416,10 @@ TripResult computeTrip(const TripPlan &plan, const TripOptions &opts, const Rout
         StopMode mode;
         int dwell;
         double extraMin;
+
+        /// Ручные времена, с от начала суток (-1 - авторасчёт)
+        int manualArrival = -1;
+        int manualDeparture = -1;
     };
 
     QVector<Row> rows;
@@ -381,12 +473,12 @@ TripResult computeTrip(const TripPlan &plan, const TripOptions &opts, const Rout
 
         rows.push_back({st.name, st.s, sp.mode,
                         (sp.mode == StopMode::Stop) ? std::max(60, ceilMinute(sp.dwellSec)) : 0,
-                        sp.extraMin});
+                        sp.extraMin, sp.manualArrival, sp.manualDeparture});
     }
 
     rows.push_back({opts.endName.isEmpty() ? nearest_name(plan.length, QObject::tr("Прибытие"))
                                            : opts.endName,
-                    plan.length, StopMode::Stop, 0, opts.endExtraMin});
+                    plan.length, StopMode::Stop, 0, opts.endExtraMin, opts.endManualArrival, -1});
 
     // Ход
     QVector<int> stops;
@@ -425,6 +517,10 @@ TripResult computeTrip(const TripPlan &plan, const TripOptions &opts, const Rout
 
     double cum_extra = 0.0;
     double dwell_before = 0.0;
+
+    /// Сдвиг часов от ручных времён (якорей): последующие строки авторасчёта
+    /// считаются от последнего якоря
+    double shift = 0.0;
     int prev_departure = opts.startTime;
 
     for (int k = 0; k < cnt; ++k)
@@ -451,19 +547,61 @@ TripResult computeTrip(const TripPlan &plan, const TripOptions &opts, const Rout
 
         cum_extra += opts.totalExtraMin * 60.0 * leg / total_run + rows[k].extraMin * 60.0;
 
-        const double exact = opts.startTime + base[k] + dwell_before + cum_extra;
+        // Ручное время становится якорем: оно идёт в экспорт как введено
+        // (без запаса и округления вверх), авторасчёт далее - от него
+        const double exact = opts.startTime + base[k] + dwell_before + cum_extra + shift;
 
-        row.arrival = std::max(ceilMinute(exact), prev_departure + 60);
-        row.reserve = static_cast<int>(std::lround(cum_extra));
+        if (rows[k].manualArrival >= 0)
+        {
+            row.arrival = rows[k].manualArrival;
+            shift = rows[k].manualArrival - exact;
+        }
+        else
+        {
+            row.arrival = std::max(ceilMinute(exact), prev_departure + 60);
+        }
+
+        row.reserve = static_cast<int>(std::lround(cum_extra + shift));
+        row.manualArrival = rows[k].manualArrival >= 0;
         row.departure = row.arrival;
 
         if ((k + 1 < cnt) && (row.mode == StopMode::Stop))
         {
-            row.departure = row.arrival + rows[k].dwell;
-            dwell_before += rows[k].dwell;
+            if (rows[k].manualDeparture >= 0)
+            {
+                row.departure = rows[k].manualDeparture;
+            }
+            else
+            {
+                row.departure = row.arrival + rows[k].dwell;
+            }
+
+            dwell_before += std::max(0, row.departure - row.arrival);
         }
 
+        row.manualDeparture = rows[k].manualDeparture >= 0;
         prev_departure = row.departure;
+    }
+
+    // Ручные времена: очевидные несоответствия - в предупреждения
+    for (int k = 1; k < cnt; ++k)
+    {
+        const TripRow &row = res.rows[k];
+
+        if (row.departure < row.arrival)
+        {
+            res.warnings << QObject::tr("«%1»: отправление %2 раньше прибытия %3 "
+                                        "(поправьте ручные времена)")
+                                .arg(row.name, formatClock(row.departure), formatClock(row.arrival));
+        }
+
+        if (row.arrival < res.rows[k - 1].departure)
+        {
+            res.warnings << QObject::tr("«%1»: прибытие %2 раньше отправления с предыдущей "
+                                        "станции (%3)")
+                                .arg(row.name, formatClock(row.arrival),
+                                     formatClock(res.rows[k - 1].departure));
+        }
     }
 
     // Расписание и точки движения для проверки пересечений
@@ -487,6 +625,8 @@ TripResult computeTrip(const TripPlan &plan, const TripOptions &opts, const Rout
         st.departure = row.departure;
         st.targetTrajectory = row.position.trajectory;
         st.targetCoord = row.position.coord;
+        st.manualArrival = row.manualArrival;
+        st.manualDeparture = row.manualDeparture;
         tt.stations.push_back(st);
     }
 
@@ -540,7 +680,8 @@ TripResult computeTrip(const TripPlan &plan, const TripOptions &opts, const Rout
         {
             const PlacedTrain &other = scenario.trains()[i];
 
-            if ((i == train_index) || !other.timetable.valid)
+            if ((i == train_index) || !other.timetable.valid
+                || related(scenario.trains()[train_index], other))
             {
                 continue;
             }

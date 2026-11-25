@@ -1,5 +1,7 @@
 #include    "ui/place-train-dialog.h"
 
+#include    "scenario/autotriggers.h"
+#include    <algorithm>
 #include    <QCheckBox>
 #include    <QComboBox>
 #include    <QCompleter>
@@ -80,7 +82,7 @@ PlaceTrainDialog::PlaceTrainDialog(const Route &route, const Scenario &scenario,
     form->addRow(tr("Голова смотрит:"), dir_row);
 
     name_edit_ = new QLineEdit(train_.name, this);
-    form->addRow(tr("Имя поезда:"), name_edit_);
+    form->addRow(tr("Номер поезда (имя файла расписания):"), name_edit_);
 
     auto_box_ = new QCheckBox(tr("Бот: автозапуск и автоведение"), this);
     auto_box_->setChecked(train_.autoMode && train_.autopilotCapable);
@@ -94,7 +96,66 @@ PlaceTrainDialog::PlaceTrainDialog(const Route &route, const Scenario &scenario,
 
     form->addRow(QString(), auto_box_);
 
+    // Ссылка «Назначить модуль» (аудит 2.4): видна, когда автоведение не включится
+    assign_label_ = new QLabel(this);
+    assign_label_->setTextFormat(Qt::RichText);
+    assign_label_->setWordWrap(true);
+    assign_label_->setStyleSheet(QStringLiteral("color: #a35a00;"));
+    assign_label_->setVisible(!train_.autopilotCapable);
+
+    const QString assign_dir = (!train_.groups.isEmpty()) ? train_.groups.first().configDir
+                                                          : QString();
+    const QString unit_hint = (!train_.groups.isEmpty()) ? train_.groups.first().config
+                                                         : QString();
+    assign_label_->setText(tr("⚠ Автоведение не включится: у крайних единиц состава нет модуля "
+                              "автопилота. <a href=\"#assign\">Назначить модуль каталогу «%1»…</a>")
+                              .arg(assign_dir));
+    connect(assign_label_, &QLabel::linkActivated, this, [this, assign_dir](const QString &)
+    {
+        emit assignModuleRequested(assign_dir);
+    });
+
+    if (!unit_hint.isEmpty())
+    {
+        assign_label_->setToolTip(tr("Модуль назначается каталогу конфигов единицы «%1» и "
+                                     "сохраняется для всех сценариев").arg(unit_hint));
+    }
+
+    form->addRow(QString(), assign_label_);
+
+    no_auto_box_ = new QCheckBox(tr("Не создавать события маршрутов по графику этого поезда"), this);
+    no_auto_box_->setChecked(train_.noAutoEvents);
+    no_auto_box_->setToolTip(tr("Светофоры и стрелки для этого поезда редактор переключать не будет "
+                                "(например, если вы настроили события вручную)"));
+    form->addRow(QString(), no_auto_box_);
+
+    class_box_ = new QComboBox(this);
+
+    for (int c = 0; c <= static_cast<int>(TrainClass::Service); ++c)
+    {
+        class_box_->addItem(trainClassTitle(static_cast<TrainClass>(c)), c);
+    }
+
+    class_box_->setCurrentIndex(std::clamp(train_.trainClass, 0, static_cast<int>(TrainClass::Service)));
+    class_box_->setToolTip(tr("Определяет очерёдность пропуска: скорый, пассажирский, пригородный, "
+                              "грузовой. Поезд низшей категории не получит маршрут раньше высшей, "
+                              "если их графики спорят за один путь"));
+    form->addRow(tr("Категория поезда:"), class_box_);
+
+    planned_box_ = new QCheckBox(tr("Поезд появится позже: только график, на карте не ставить"), this);
+    planned_box_->setChecked(train_.planned);
+    planned_box_->setToolTip(tr("Расписание запишется в timetable/<имя>.xml. Имя должно совпадать "
+                                "с именем, которое поезд получит в игре (например, после "
+                                "переименования при сцепке)"));
+    form->addRow(QString(), planned_box_);
+
     layout->addLayout(form);
+
+    // Пояснение «как поезд поведёт себя в игре» (аудит 2.3)
+    behaviour_label_ = new QLabel(this);
+    behaviour_label_->setWordWrap(true);
+    behaviour_label_->setStyleSheet(QStringLiteral("color: #444; font-style: italic;"));
+    layout->addWidget(behaviour_label_);
 
     warnings_label_ = new QLabel(this);
     warnings_label_->setWordWrap(true);
@@ -149,7 +210,7 @@ QString PlaceTrainDialog::directionText(const Route &route, const QString &traje
 
     if (dir == o)
     {
-        return tr("по ходу пути, «%1», %2").arg(o > 0 ? tr("туда") : tr("обратно"), along);
+        return tr("по ходу пути, «%1», %2").arg(o > 0 ? tr("туда (1)") : tr("обратно (-1)"), along);
     }
 
     return tr("против хода пути (неправильный путь), %1").arg(along);
@@ -165,6 +226,9 @@ PlacedTrain PlaceTrainDialog::current() const
     t.coord = coord_box_->value();
     t.name = name_edit_->text().trimmed();
     t.autoMode = auto_box_->isEnabled() && auto_box_->isChecked();
+    t.planned = planned_box_->isChecked();
+    t.trainClass = class_box_->currentData().toInt();
+    t.noAutoEvents = no_auto_box_->isChecked();
 
     return t;
 }
@@ -248,6 +312,31 @@ void PlaceTrainDialog::onFlip()
 }
 
 //------------------------------------------------------------------------------
+// Пояснение «как поезд поведёт себя в игре» (аудит 2.3)
+//------------------------------------------------------------------------------
+QString PlaceTrainDialog::gameBehaviourText() const
+{
+    const PlacedTrain t = current();
+
+    if (t.planned)
+    {
+        return tr("В игре: поезд появится позже и сразу поедет по графику timetable/%1.xml; "
+                  "в начале игры на карте его нет.").arg(t.name);
+    }
+
+    if (t.autoMode && t.autopilotCapable)
+    {
+        return tr("В игре: поезд стоит на путях, а с открытием маршрутов автопилот ведёт его "
+                  "по графику — отправление и скорости по расписанию, светофоры и стрелки "
+                  "переключаются маршрутами графика.");
+    }
+
+    return tr("В игре: поезд стоит на путях и ждёт. Автоведение не включится (нет модуля "
+              "автопилота у крайних единиц), движением управят события сценария или "
+              "ручное управление.");
+}
+
+//------------------------------------------------------------------------------
 //
 //------------------------------------------------------------------------------
 void PlaceTrainDialog::refresh()
@@ -255,6 +344,7 @@ void PlaceTrainDialog::refresh()
     const PlacedTrain t = current();
 
     direction_label_->setText(directionText(route_, t.trajectory, t.dir));
+    behaviour_label_->setText(gameBehaviourText());
 
     const PlacementCheck chk = scenario_.check(route_, t, ignore_index_);
 
