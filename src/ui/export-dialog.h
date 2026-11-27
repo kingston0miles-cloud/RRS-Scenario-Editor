@@ -67,6 +67,10 @@ private:
     QCheckBox *overwrite_ = nullptr;
     QCheckBox *triggers_ = nullptr;
 
+    /// Пакет-дополнение (этап 29): чекбокс и каталог пакета
+    QCheckBox *addon_check_ = nullptr;
+    QLineEdit *addon_dir_ = nullptr;
+
     /// Ссылка «показать события» и раскрываемый список авто-событий по поездам
     QLabel *auto_link_ = nullptr;
     QTreeWidget *auto_tree_ = nullptr;

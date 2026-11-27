@@ -170,6 +170,38 @@ TractionProfile guessTraction(const QVector<ConsistGroup> &groups, const Vehicle
                     .arg(locos);
     }
 
+    // Конструкционные скорости вагонов тоже ограничивают состав (этап 26:
+    // V_constr читается прямо из конфига единицы)
+    for (const ConsistGroup &g : groups)
+    {
+        const VehicleConfigData *v = catalog.findVehicle(g.configDir, g.config);
+
+        if (v == nullptr || v->isLocomotive || v->constructionSpeed <= 0.0)
+        {
+            continue;
+        }
+
+        if (tp.vMaxKmh <= 0.0 || v->constructionSpeed < tp.vMaxKmh)
+        {
+            tp.vMaxKmh = v->constructionSpeed;
+            tp.notes << QObject::tr("Скорость ограничена вагоном «%1»: %2 км/ч")
+                            .arg(v->id())
+                            .arg(v->constructionSpeed, 0, 'f', 0);
+        }
+    }
+
+    // Чугунные тормозные колодки тормозят слабее композитных; точного значения
+    // в конфигах нет, поэтому - предупреждение, а не поправка расчёта
+    for (const ConsistGroup &g : groups)
+    {
+        if (g.brakeShoes)
+        {
+            tp.notes << QObject::tr("В составе есть единицы на чугунных колодках: "
+                                    "служебное замедление может быть завышено");
+            break;
+        }
+    }
+
     return tp;
 }
 

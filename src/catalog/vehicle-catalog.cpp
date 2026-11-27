@@ -355,8 +355,35 @@ void VehicleCatalog::loadVehicles()
 
             v.hasAutopilot = !fl.value(QStringLiteral("AutopilotModule")).isEmpty();
 
+            // RRS 1.10: единица может назначать себе модуль в своём конфиге
+            // (секция Vehicle, поля Module и ModuleDir). Симулятор 1.10 берёт
+            // его приоритетнее указания в конфиге состава
+            v.ownModule.module = fl.value(QStringLiteral("Module"));
+            v.ownModule.moduleDir = fl.value(QStringLiteral("ModuleDir"));
+
+            if (v.ownModule.moduleDir.isEmpty())
+            {
+                v.ownModule.moduleDir = v.ownModule.module;
+            }
+
             v.numAxis = std::max(1, toInt(fl.value(QStringLiteral("NumAxis")), v.numAxis));
             v.mainResist = fl.value(QStringLiteral("MainResist"));
+
+            // Конструкционная скорость может быть указана прямо в конфиге единицы -
+            // у вагонов конфига автопилота нет, там её взять неоткуда
+            for (const Section &sec : std::as_const(sections))
+            {
+                if (sec.fields.contains(QStringLiteral("V_constr")))
+                {
+                    const double cs = toDouble(sec.fields.value(QStringLiteral("V_constr")), 0.0);
+
+                    if (cs > 0.0)
+                    {
+                        v.constructionSpeed = cs;
+                        break;
+                    }
+                }
+            }
 
             if (!v.mainResist.isEmpty())
             {
@@ -492,10 +519,10 @@ void VehicleCatalog::loadTrains()
             g.module.module = fl.value(QStringLiteral("Module"));
             g.config = fl.value(QStringLiteral("ModuleConfig"));
 
-            if (g.module.module.isEmpty() || g.config.isEmpty())
+            if (g.config.isEmpty())
             {
-                load_warnings_ << QStringLiteral("Состав %1: у секции Vehicle не заданы "
-                                                 "Module или ModuleConfig, она пропущена").arg(t.name);
+                load_warnings_ << QStringLiteral("Состав %1: у секции Vehicle не задан "
+                                                 "ModuleConfig, она пропущена").arg(t.name);
                 continue;
             }
 
@@ -511,6 +538,26 @@ void VehicleCatalog::loadTrains()
             if (g.configDir.isEmpty())
             {
                 g.configDir = g.config;
+            }
+
+            // RRS 1.10: модуль единицы приоритетно берётся из её собственного
+            // конфига; поле Module конфига состава - запасной источник (1.9.4
+            // без него не работает, поэтому при экспорте он всё равно пишется).
+            // 1.10-состав с пустым Module читается правильно, если модуль
+            // назначен единице
+            const VehicleConfigData *veh = findVehicle(g.configDir, g.config);
+
+            if (veh != nullptr && !veh->ownModule.module.isEmpty())
+            {
+                g.module = veh->ownModule;
+            }
+
+            if (g.module.module.isEmpty())
+            {
+                load_warnings_ << QStringLiteral("Состав %1: у секции Vehicle не задан Module "
+                                                 "(ни в составе, ни в конфиге единицы %2), она пропущена")
+                                      .arg(t.name, g.configId());
+                continue;
             }
 
             g.count = toInt(fl.value(QStringLiteral("Count")), 0);
@@ -698,6 +745,15 @@ void VehicleCatalog::resolveModules()
     {
         v.module = ModuleRef();
         v.moduleSource = ModuleSource::Unknown;
+
+        // RRS 1.10: модуль из конфига самой единицы старше всего - симулятор
+        // 1.10 загружает именно его, составы и ручные привязки не участвуют
+        if (!v.ownModule.module.isEmpty())
+        {
+            v.module = v.ownModule;
+            v.moduleSource = ModuleSource::OwnConfig;
+            continue;
+        }
 
         auto man = manual_modules_.constFind(v.configDir);
 

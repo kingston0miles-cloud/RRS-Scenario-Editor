@@ -7,27 +7,12 @@
 #include    "scenario/export.h"
 #include    "scenario/importer.h"
 #include    "test-import-data.h"
+#include    "test-utils.h"
 
 using namespace rse;
 
 namespace
 {
-
-void writeFile(const QString &path, const QString &content)
-{
-    QDir().mkpath(QFileInfo(path).absolutePath());
-
-    QFile f(path);
-    QVERIFY2(f.open(QIODevice::WriteOnly), qPrintable(path));
-    f.write(content.toUtf8());
-}
-
-QString readFile(const QString &path)
-{
-    QFile f(path);
-
-    return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString();
-}
 
 QString vehicleXml(double length, bool crane, bool autopilot)
 {

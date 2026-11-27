@@ -6,20 +6,12 @@
 
 #include    "scenario/checker.h"
 #include    "scenario/formation.h"
+#include    "test-utils.h"
 
 using namespace rse;
 
 namespace
 {
-
-void writeFile(const QString &path, const QString &content)
-{
-    QDir().mkpath(QFileInfo(path).absolutePath());
-
-    QFile f(path);
-    QVERIFY2(f.open(QIODevice::WriteOnly), qPrintable(path));
-    f.write(content.toUtf8());
-}
 
 void buildRoute(const QString &root)
 {

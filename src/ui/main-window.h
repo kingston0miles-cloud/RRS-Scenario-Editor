@@ -149,6 +149,9 @@ public slots:
     void removeEvent(int index);
     void moveEvent(int index, int delta);
 
+    /// Перелёт камеры к месту события на карте (кнопка «На карте…»)
+    void locateEvent(int index);
+
     EventsPanel *eventsPanel() const
     {
         return events_panel_;
@@ -244,6 +247,7 @@ private slots:
     void onOpenGame();
     void onShowWarnings();
     void onShowShortcuts();
+    void onLanguageChanged(const QString &lang);
     void onHoverChanged(const rse::Route::Hit &hit);
     void onManualModuleChanged();
     void onWorkflowStep(int step);
@@ -297,6 +301,13 @@ private:
     QAction *warnings_action_ = nullptr;
 
     void createActions();
+
+    /// Разделы главного меню
+    void createFileMenu();
+    void createEditMenu();
+    void createHelpMenu();
+    void createCheckMenu();
+    void createViewMenu();
     void updateInfo();
     void updateWorkflowState();
 

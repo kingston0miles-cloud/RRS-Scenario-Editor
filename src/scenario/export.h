@@ -21,8 +21,13 @@ struct ExportOptions
     /// Заменить существующий каталог сценария (файлы main.lua, README.md, timetable)
     bool overwrite = false;
 
-    /// Триггеры маршрутов по расписаниям с очерёдностью по категории поезда
+    /// Дополнительно генерировать события для поездов с автоведением и
+    /// согласовывать их маршруты по категории; для поездов без автоведения
+    /// события по графику создаются всегда
     bool autoTriggers = true;
+
+    /// Каталог для «пакета-дополнения» (пусто - не собирать; этап 29)
+    QString addonDir;
 };
 
 //------------------------------------------------------------------------------
@@ -72,10 +77,6 @@ struct ExportPlan
     /// Триггеры по расписаниям (маршруты, очерёдность по категории поезда)
     QVector<ScenarioEvent> autoEvents;
 
-    /// Поезд -> по станциям: подход / уход в расписании не писать (маршрут строит триггер)
-    QHash<QString, QVector<bool>> clearApproach;
-    QHash<QString, QVector<bool>> clearRemoval;
-
     /// Каталог сценария
     QString scenarioDir;
 
@@ -124,9 +125,20 @@ void timetableApproachRemoval(const Route &route, const PlacedTrain &train,
                               QStringList *approach, QStringList *removal);
 
 /// Записать сценарий (и новые составы в cfg/trains) по плану. Возвращает false и
-/// причину в error
+/// причину в error. Если options.addonDir не пуст, после записи собирается
+/// «пакет-дополнение» (этап 29)
 bool writeExport(const Route &route, const VehicleCatalog &catalog, const Scenario &scenario,
                  const ExportPlan &plan, const ExportOptions &options, QString *error = nullptr);
+
+/// Собрать «пакет-дополнение»: минимальное дерево игры, которое копируется поверх
+/// установленной поверху - routes/<маршрут>/scenarios/<имя>/ (main.lua, README.md,
+/// timetable/) и cfg/trains/<составы из плана>.xml; в корне пакета -
+/// README-package.md с инструкцией. Каталог создаётся при необходимости, прежний
+/// пакет того же сценария заменяется
+bool buildAddonPackage(const Route &route, const Scenario &scenario,
+                       const VehicleCatalog &catalog, const ExportPlan &plan,
+                       const QString &scenario_dir, const QString &addon_dir,
+                       QString *error = nullptr);
 
 /// Допустимое имя каталога сценария
 bool isValidScenarioName(const QString &name);

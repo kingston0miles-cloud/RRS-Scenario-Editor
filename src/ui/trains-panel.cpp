@@ -37,6 +37,9 @@ TrainsPanel::TrainsPanel(QWidget *parent)
     consist_button_ = new QPushButton(tr("Состав…"), this);
     timetable_button_ = new QPushButton(tr("График…"), this);
     continuation_button_ = new QPushButton(tr("Сцепка…"), this);
+    continuation_button_->setProperty("baseToolTip",
+                                      tr("Локомотив прибывает к вагонам, сцепляется, и дальше едет "
+                                         "новый поезд со своим графиком"));
     continuation_button_->setToolTip(tr("Локомотив прибывает к вагонам, сцепляется, и дальше едет "
                                         "новый поезд со своим графиком"));
     edit_button_ = new QPushButton(tr("Положение…"), this);
@@ -52,6 +55,10 @@ TrainsPanel::TrainsPanel(QWidget *parent)
     remove_button_->setStyleSheet(QStringLiteral("QPushButton { color: #b3261e; }"));
     row->addWidget(remove_button_);
     layout->addLayout(row);
+
+    // Неактивные кнопки серые: сразу видно, что действие недоступно
+    setStyleSheet(QStringLiteral(
+        "QPushButton:disabled { color: #9aa0a6; background: #f0f0f0; }"));
 
     connect(tree_, &QTreeWidget::currentItemChanged, this, [this]
     {
@@ -203,6 +210,11 @@ void TrainsPanel::updateButtons()
     const bool cont = has && scenario_ != nullptr && index < scenario_->size()
                       && scenario_->trains()[index].isContinuation();
 
+    const QString no_selection = tr("Сначала выберите поезд в списке или на карте");
+    const QString continuation_hint =
+        tr("У поезда-продолжения сцепки положение и состав вычисляются автоматически "
+           "из локомотива и вагонов");
+
     // у продолжения положение и состав вычисляются из локомотива и вагонов
     consist_button_->setEnabled(has && !cont);
     timetable_button_->setEnabled(has);
@@ -212,16 +224,30 @@ void TrainsPanel::updateButtons()
     reverse_button_->setEnabled(has && !cont);
     remove_button_->setEnabled(has);
 
-    const QString hint = has ? QString() : tr("Сначала выберите поезд в списке или на карте");
-
-    for (QPushButton *b : { consist_button_, timetable_button_, continuation_button_, edit_button_,
-                            reverse_button_, remove_button_ })
+    // Неактивная кнопка серая, и подсказка объясняет, почему она неактивна
+    const auto set_hint = [no_selection, continuation_hint](QPushButton *b, bool enabled,
+                                                            bool cont_reason)
     {
-        if (!has)
+        if (!enabled)
         {
-            b->setToolTip(hint);
+            b->setToolTip(cont_reason ? continuation_hint : no_selection);
         }
-    }
+        else if (b->property("baseToolTip").isValid())
+        {
+            b->setToolTip(b->property("baseToolTip").toString());
+        }
+        else
+        {
+            b->setToolTip(QString());
+        }
+    };
+
+    set_hint(consist_button_, has && !cont, cont);
+    set_hint(timetable_button_, has, false);
+    set_hint(continuation_button_, has, false);
+    set_hint(edit_button_, has && !cont, cont);
+    set_hint(reverse_button_, has && !cont, cont);
+    set_hint(remove_button_, has, false);
 }
 
 } // namespace rse

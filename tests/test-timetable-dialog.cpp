@@ -13,23 +13,16 @@
 #include    <QLineEdit>
 #include    <QListWidget>
 #include    <QTimer>
+#include    <QToolButton>
 
 #include    "ui/event-dialog.h"
 #include    "ui/timetable-dialog.h"
+#include    "test-utils.h"
 
 using namespace rse;
 
 namespace
 {
-
-void writeFile(const QString &path, const QString &content)
-{
-    QDir().mkpath(QFileInfo(path).absolutePath());
-
-    QFile f(path);
-    QVERIFY2(f.open(QIODevice::WriteOnly), qPrintable(path));
-    f.write(content.toUtf8());
-}
 
 //------------------------------------------------------------------------------
 // Прямая T1 длиной 8 км вдоль Y (пикетаж = y + 1000), ограничение 60 км/ч на
@@ -47,6 +40,9 @@ void buildRoute(const QString &root)
 
     writeFile(root + "/topology/trajectories/T1.traj", traj);
     writeFile(root + "/topology/trajectories/Z.traj", "0 0 0 100\n0 -300 0 -200\n");
+    // Изолированная траектория в стороне: ни с чем не соединена - до неё
+    // физически нельзя доехать (тест конфликта пути)
+    writeFile(root + "/topology/trajectories/Q.traj", "9000 9000 9500 9500\n");
     writeFile(root + "/topology/topology.xml", "<?xml version=\"1.0\"?>\n<Config/>\n");
     writeFile(root + "/topology/stations.conf",
               "Станция-A\t0\t0\t0\n"
@@ -273,6 +269,54 @@ private slots:
         QCOMPARE(dlg.category(), 0);
     }
 
+    //------------------------------------------------------------------------------
+    // Платформы станций (этап 27): выбор в таблице попадает в расписание
+    // и восстанавливается при повторном открытии
+    //------------------------------------------------------------------------------
+    void platformsColumn()
+    {
+        Scenario sc;
+        sc.add(makeTrain());
+
+        TimetableDialog dlg(route_, catalog_, sc, 0, TimetableState(), nullptr);
+        dlg.setEnd("T1", 8000.0);
+        QVERIFY2(dlg.plan().ok, qPrintable(dlg.plan().error));
+
+        // Станция B - строка 1: по умолчанию промежуточные станции выключены
+        // и в режиме «Проезд». Платформы задают у станций остановки -
+        // включаем станцию и делаем остановку
+        dlg.table()->item(1, TimetableDialog::ColUse)->setCheckState(Qt::Checked);
+
+        auto *mode_b = qobject_cast<QComboBox *>(dlg.table()->cellWidget(1, TimetableDialog::ColMode));
+        QVERIFY(mode_b != nullptr);
+        mode_b->setCurrentIndex(1);
+        QVERIFY2(dlg.plan().ok, qPrintable(dlg.plan().error));
+        QCOMPARE(dlg.timetable().stations.size(), 3);
+        QCOMPARE(dlg.timetable().stations[1].name, QStringLiteral("Станция-B"));
+
+        auto *combo = qobject_cast<QComboBox *>(dlg.table()->cellWidget(1, TimetableDialog::ColPlatform));
+        QVERIFY(combo != nullptr);
+        QCOMPARE(combo->currentIndex(), 0);
+        QCOMPARE(dlg.timetable().stations[1].rightPlatform, -1);
+
+        // «справа и слева» попадает в расписание
+        combo->setCurrentIndex(3);
+        QVERIFY(dlg.isDirty());
+        QCOMPARE(dlg.timetable().stations[1].rightPlatform, 1);
+        QCOMPARE(dlg.timetable().stations[1].leftPlatform, 1);
+        QCOMPARE(dlg.timetable().stations[2].rightPlatform, -1);
+
+        // Сброс возвращает «не задано»
+        combo->setCurrentIndex(0);
+        QCOMPARE(dlg.timetable().stations[1].rightPlatform, -1);
+
+        // Повторное открытие графика восстанавливает выбор из расписания
+        combo->setCurrentIndex(1);
+        const TimetableState st = TimetableState::fromTimetable(dlg.timetable());
+        QCOMPARE(st.stations.value(QStringLiteral("Станция-B")).rightPlatform, 1);
+        QCOMPARE(st.stations.value(QStringLiteral("Станция-B")).leftPlatform, 0);
+    }
+
     void eventDialogFlow()
     {
         Scenario sc;
@@ -344,6 +388,140 @@ private slots:
         // Оценка выполнения графика заполнена у начала и конца
         QVERIFY(!dlg.table()->item(0, TimetableDialog::ColRoute)->text().isEmpty());
         QVERIFY(!dlg.table()->item(1, TimetableDialog::ColRoute)->text().isEmpty());
+    }
+
+    //------------------------------------------------------------------------------
+    // Удаление станции красным крестом и добавление плюсом между строками:
+    // строка исчезает целиком (не галочкой), станция возвращается через «+»
+    //------------------------------------------------------------------------------
+    void removeAndInsertStations()
+    {
+        Scenario sc;
+        sc.add(makeTrain());
+
+        TimetableDialog dlg(route_, catalog_, sc, 0, TimetableState(), nullptr);
+        dlg.setEnd("T1", 8000.0);
+        QVERIFY2(dlg.plan().ok, qPrintable(dlg.plan().error));
+        QCOMPARE(dlg.table()->rowCount(), 3);   // начало, B, конец
+
+        // У крайних строк креста нет
+        QVERIFY(dlg.table()->cellWidget(0, TimetableDialog::ColRemove) == nullptr);
+        QVERIFY(dlg.table()->cellWidget(2, TimetableDialog::ColRemove) == nullptr);
+
+        // Красный крест у станции B: строка исчезает целиком
+        auto *rm = qobject_cast<QToolButton *>(dlg.table()->cellWidget(1, TimetableDialog::ColRemove));
+        QVERIFY(rm != nullptr);
+        rm->click();
+
+        QVERIFY2(dlg.plan().ok, qPrintable(dlg.plan().error));
+        QCOMPARE(dlg.table()->rowCount(), 2);   // начало, конец
+        QCOMPARE(dlg.timetable().stations.size(), 2);
+        QVERIFY(dlg.state().removedStations.contains(QStringLiteral("Станция-B")));
+
+        // Убранная станция не возвращается при пересчётах
+        dlg.totalExtraSpin()->setValue(dlg.totalExtraSpin()->value() + 2.0);
+        QCOMPARE(dlg.table()->rowCount(), 2);
+
+        // Зелёный «+» между строками: новая строка с выпадающим списком станций
+        dlg.insertRowAt(1);
+        QCOMPARE(dlg.table()->rowCount(), 3);
+
+        auto *combo = qobject_cast<QComboBox *>(dlg.table()->cellWidget(1, TimetableDialog::ColName));
+        QVERIFY(combo != nullptr);
+        QVERIFY(dlg.table()->item(1, TimetableDialog::ColName)->text().isEmpty());
+
+        combo->setCurrentIndex(combo->findText(QStringLiteral("Станция-B")));
+        emit combo->activated(combo->currentIndex());
+
+        // Станция снова в таблице; крест ранее её убрал - «+» возвращает её,
+        // и строка включена в график (галочка новой строки стоит по умолчанию)
+        QVERIFY2(dlg.plan().ok, qPrintable(dlg.plan().error));
+        QCOMPARE(dlg.table()->rowCount(), 3);
+        QCOMPARE(dlg.table()->item(1, TimetableDialog::ColName)->text(), QStringLiteral("Станция-B"));
+        QVERIFY(dlg.state().removedStations.isEmpty());
+        QCOMPARE(dlg.timetable().stations.size(), 3);
+
+        // Станция стала обычной строкой плана, а не добавленной
+        QVERIFY(dlg.state().addedStations.isEmpty());
+
+        // Состояние переживает повторное открытие
+        const Timetable tt = dlg.timetable();
+        TimetableDialog again(route_, catalog_, sc, 0, TimetableState::fromTimetable(tt), nullptr);
+        QCOMPARE(again.timetable().stations.size(), 3);
+    }
+
+    //------------------------------------------------------------------------------
+    // Конфликт пути: график не сбрасывается, станция-виновник подсвечивается
+    // лёгким красным, предупреждение с её именем
+    //------------------------------------------------------------------------------
+    void planFailureKeepsTimetable()
+    {
+        Scenario sc;
+        sc.add(makeTrain());
+
+        TimetableDialog dlg(route_, catalog_, sc, 0, TimetableState(), nullptr);
+        dlg.setEnd("T1", 8000.0);
+        QVERIFY2(dlg.plan().ok, qPrintable(dlg.plan().error));
+        QCOMPARE(dlg.table()->rowCount(), 3);
+
+        dlg.table()->item(1, TimetableDialog::ColUse)->setCheckState(Qt::Checked);
+
+        const int rows = dlg.table()->rowCount();
+        const int arrival_end = dlg.timetable().stations.last().arrival;
+        const QString summary = dlg.summaryText();
+
+        // Выбираем станции путь, до которого доехать физически нельзя
+        // (изолированная траектория Q ни с чем не соединена)
+        auto *track = qobject_cast<QComboBox *>(dlg.table()->cellWidget(1, TimetableDialog::ColTrack));
+        QVERIFY(track != nullptr);
+        track->addItem(QStringLiteral("Q"), QStringLiteral("Q"));
+        track->setCurrentIndex(track->count() - 1);
+        emit track->activated(track->currentIndex());
+
+        // График остался прежним: таблица, времена и сводка на месте
+        QVERIFY2(dlg.plan().ok, qPrintable(dlg.plan().error));
+        QCOMPARE(dlg.table()->rowCount(), rows);
+        QCOMPARE(dlg.timetable().stations.last().arrival, arrival_end);
+        QCOMPARE(dlg.summaryText(), summary);
+
+        // Предупреждение называет станцию-виновника
+        QVERIFY(dlg.warningsText().contains(QStringLiteral("Станция-B")));
+
+        // Строка-виновник подсвечена лёгким красным
+        QCOMPARE(dlg.table()->item(1, TimetableDialog::ColName)->background().color(),
+                 QColor(255, 214, 214));
+
+        // Вернули «авто» - график снова пересчитан, подсветка снята
+        track->setCurrentIndex(0);
+        emit track->activated(0);
+        QVERIFY2(dlg.plan().ok, qPrintable(dlg.plan().error));
+        QCOMPARE(dlg.table()->item(1, TimetableDialog::ColName)->background(), QBrush());
+    }
+
+    //------------------------------------------------------------------------------
+    // Подчёркивание всей ячейки времени (делегат у колонок прибытия/отправления)
+    // и изменяемое окно графика
+    //------------------------------------------------------------------------------
+    void underlineDelegateAndWindow()
+    {
+        Scenario sc;
+        sc.add(makeTrain());
+
+        TimetableDialog dlg(route_, catalog_, sc, 0, TimetableState(), nullptr);
+
+        // У колонок времени установлен делегат: линия во всю ширину ячейки
+        QVERIFY(dlg.table()->itemDelegateForColumn(TimetableDialog::ColArrival) != nullptr);
+        QVERIFY(dlg.table()->itemDelegateForColumn(TimetableDialog::ColDeparture) != nullptr);
+
+        // Окно изменяемого размера: есть минимальный размер, стартовый больше него
+        QVERIFY(dlg.minimumSize().width() >= 400);
+        QVERIFY(dlg.size().width() >= dlg.minimumSize().width());
+
+        // Подчёркивание больше не делается шрифтом
+        dlg.setEnd("T1", 8000.0);
+        QVERIFY2(dlg.plan().ok, qPrintable(dlg.plan().error));
+        QVERIFY(!dlg.table()->item(1, TimetableDialog::ColArrival)->font().underline());
+        QVERIFY(!dlg.table()->item(1, TimetableDialog::ColDeparture)->font().underline());
     }
 };
 

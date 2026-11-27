@@ -5,20 +5,12 @@
 #include    <QTemporaryDir>
 
 #include    "scenario/trip.h"
+#include    "test-utils.h"
 
 using namespace rse;
 
 namespace
 {
-
-void writeFile(const QString &path, const QString &content)
-{
-    QDir().mkpath(QFileInfo(path).absolutePath());
-
-    QFile f(path);
-    QVERIFY2(f.open(QIODevice::WriteOnly), qPrintable(path));
-    f.write(content.toUtf8());
-}
 
 //------------------------------------------------------------------------------
 // Прямая T1 длиной 8 км вдоль Y (пикетаж = y + 1000), ограничение 60 км/ч на
@@ -97,8 +89,10 @@ private slots:
     void runRespectsLimitAndPhysics();
     void stopsAndMargins();
     void manualTimes();
+    void extraStopsRows();
     void conflictsWithOtherTrains();
     void noTractionWarning();
+    void tractionFromVehicles();
 };
 
 void TestTrip::initTestCase()
@@ -310,6 +304,71 @@ void TestTrip::manualTimes()
     QVERIFY(end.warnings.isEmpty());
 }
 
+//------------------------------------------------------------------------------
+// Станции, добавленные в график вручную: попадают в расписание между обычными
+// строками; слишком близкие к соседям отбрасываются, дальние от пути -
+// с предупреждением
+//------------------------------------------------------------------------------
+void TestTrip::extraStopsRows()
+{
+    Scenario sc;
+    sc.add(makeTrain("P1", "T1", 0.0, 1));
+
+    const TripPlan p = plan(sc);
+    QVERIFY2(p.ok, qPrintable(p.error));
+
+    TripOptions o;
+    o.startTime = 10 * 3600;
+
+    ExtraStop es;
+    es.name = QStringLiteral("Платформа-Д");
+    es.s = 6000.0;
+    es.mode = StopMode::Stop;
+    es.dwellSec = 120;
+    o.extraStops.push_back(es);
+
+    const TripResult r = computeTrip(p, o, route_, sc, 0);
+    QVERIFY2(r.ok, qPrintable(r.error));
+
+    // начало, добавленная станция, конец
+    QCOMPARE(r.rows.size(), 3);
+    QCOMPARE(r.rows[1].name, QString("Платформа-Д"));
+    QVERIFY(qAbs(r.rows[1].s - 6000.0) < 1.0);
+    QCOMPARE(r.rows[1].departure - r.rows[1].arrival, 120);
+    QCOMPARE(r.timetable.stations[1].name, QString("Платформа-Д"));
+    QCOMPARE(r.timetable.stations[1].targetTrajectory, QString("T1"));
+
+    // Слишком близко к уже вставленной строке: в график не попадает
+    ExtraStop close = es;
+    close.name = QStringLiteral("Близкая");
+    close.s = 6010.0;
+    o.extraStops.push_back(close);
+
+    // Дальняя от пути станция: расписание привязывает её к пути с предупреждением
+    ExtraStop far = es;
+    far.name = QStringLiteral("Далёкая");
+    far.s = 7000.0;
+    far.offset = 500.0;
+    o.extraStops.push_back(far);
+
+    const TripResult r2 = computeTrip(p, o, route_, sc, 0);
+    QVERIFY2(r2.ok, qPrintable(r2.error));
+
+    QCOMPARE(r2.rows.size(), 4);   // «Близкая» отброшена, «Далёкая» вставлена
+    QCOMPARE(r2.rows[1].name, QString("Платформа-Д"));
+    QCOMPARE(r2.rows[2].name, QString("Далёкая"));
+    QCOMPARE(r2.rows[2].mode, StopMode::Stop);
+
+    bool far_warn = false;
+
+    for (const QString &w : r2.warnings)
+    {
+        far_warn = far_warn || w.contains(QStringLiteral("Далёкая"));
+    }
+
+    QVERIFY(far_warn);
+}
+
 void TestTrip::conflictsWithOtherTrains()
 {
     Scenario sc;
@@ -372,6 +431,60 @@ void TestTrip::noTractionWarning()
     const TripResult r = computeTrip(p, o, route_, sc, 0);
     QVERIFY(r.ok);
     QVERIFY(!r.warnings.isEmpty());
+}
+
+//------------------------------------------------------------------------------
+// Тяга по данным конфигов (этап 26): V_constr вагона ограничивает состав,
+// чугунные колодки дают предупреждение
+//------------------------------------------------------------------------------
+void TestTrip::tractionFromVehicles()
+{
+    QTemporaryDir g;
+    QVERIFY(g.isValid());
+    const QString root = g.path();
+
+    // Локомотив из известной таблицы + вагон с конструкционной скоростью 80 км/ч
+    writeFile(root + "/cfg/vehicles/loco/vl60k.xml",
+              "<?xml version=\"1.0\"?>\n<Config>\n<Vehicle>\n"
+              "<EmptyMass>184000</EmptyMass><PayloadMass>0</PayloadMass>\n"
+              "<Length>34</Length><NumAxis>6</NumAxis>\n"
+              "<BrakeCraneModule>krm394</BrakeCraneModule>\n"
+              "<AutopilotModule>some-autopilot</AutopilotModule>\n"
+              "</Vehicle>\n</Config>\n");
+    writeFile(root + "/cfg/vehicles/cars/wagon80.xml",
+              "<?xml version=\"1.0\"?>\n<Config>\n<Vehicle>\n"
+              "<EmptyMass>50000</EmptyMass><PayloadMass>60000</PayloadMass>\n"
+              "<Length>14</Length><NumAxis>4</NumAxis>\n"
+              "<V_constr>80</V_constr>\n"
+              "</Vehicle>\n</Config>\n");
+
+    VehicleCatalog c;
+    QVERIFY2(c.load(root), qPrintable(c.errorString()));
+    QVERIFY(c.findVehicle("loco", "vl60k") != nullptr);
+    QVERIFY(c.findVehicle("cars", "wagon80") != nullptr);
+
+    QVector<ConsistGroup> groups;
+
+    ConsistGroup loco;
+    loco.configDir = QStringLiteral("loco");
+    loco.config = QStringLiteral("vl60k");
+    loco.count = 1;
+    groups.push_back(loco);
+
+    ConsistGroup wagon;
+    wagon.configDir = QStringLiteral("cars");
+    wagon.config = QStringLiteral("wagon80");
+    wagon.count = 5;
+    wagon.brakeShoes = true;
+    groups.push_back(wagon);
+
+    const TractionProfile tp = guessTraction(groups, c);
+
+    // Конструкционная скорость вагона ограничила состав (у локомотива было 100)
+    QVERIFY2(qAbs(tp.vMaxKmh - 80.0) < 0.5, qPrintable(QString::number(tp.vMaxKmh)));
+    const QString notes = tp.notes.join(QLatin1Char(' '));
+    QVERIFY2(notes.contains(QStringLiteral("вагоном")), qPrintable(notes));
+    QVERIFY2(notes.contains(QStringLiteral("чугунных колодках")), qPrintable(notes));
 }
 
 QTEST_MAIN(TestTrip)

@@ -3,6 +3,7 @@
 
 #include    <QDialog>
 #include    <QHash>
+#include    <QSet>
 
 #include    "catalog/vehicle-catalog.h"
 #include    "scenario/stationroute.h"
@@ -12,12 +13,15 @@
 class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
+class QLineEdit;
 class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
 class QTableWidget;
 class QTableWidgetItem;
 class QTimeEdit;
+class QTextBrowser;
+class QToolButton;
 
 namespace rse
 {
@@ -35,6 +39,11 @@ struct StationSetting
     /// Выбранный путь станции (пусто - автоматически)
     QString track;
     double trackCoord = 0.0;
+
+    /// Платформы станции (этап 27): -1 не задано, 0 нет, 1 есть; переносятся
+    /// в расписание как есть
+    int rightPlatform = -1;
+    int leftPlatform = -1;
 
     /// Ручные времена строки, с от начала суток (-1 - авторасчёт)
     int manualArrival = -1;
@@ -64,6 +73,14 @@ struct TimetableState
 
     QHash<QString, StationSetting> stations;
 
+    /// Станции, убранные из графика красным крестом: строк в таблице не будет,
+    /// пока станцию не добавят снова плюсом
+    QSet<QString> removedStations;
+
+    /// Станции, добавленные в график плюсом между строками и не лежащие на пути
+    /// плана (по порядку таблицы)
+    QStringList addedStations;
+
     /// Закреплённые промежуточные станции трассы («через станцию»), по порядку
     QVector<TripPin> pins;
 
@@ -91,12 +108,17 @@ signals:
     /// Пользователь просит выбрать конец пути на карте (окно остаётся открытым)
     void pickRequested();
 
-    /// Маршрут изменился: перерисовать на карте
-    void tripChanged(const QVector<PathSegment> &path, const QVector<TimetableStation> &stations);
+    /// Маршрут изменился: перерисовать на карте (конфликтные пути - для красной
+    /// разметки; по умолчанию пусто)
+    void tripChanged(const QVector<PathSegment> &path, const QVector<TimetableStation> &stations,
+                     const QStringList &conflicts = {});
 
     /// Светофоры, которые откроются маршрутами графика: подсветить на карте
     /// (пусто - убрать подсветку)
     void signalMarksChanged(const QVector<SignalMark> &marks);
+
+    /// Пользователь щёлкнул по пути в замечании: показать путь на карте
+    void locateRequested(const QString &trajectory);
 
 public:
 
@@ -109,6 +131,8 @@ public:
 
     TimetableDialog(const Route &route, const VehicleCatalog &catalog, const Scenario &scenario,
                     int train_index, const TimetableState &state, QWidget *parent = nullptr);
+
+    ~TimetableDialog();
 
     /// Что выбрал пользователь (для повторного открытия)
     TimetableState state() const;
@@ -195,6 +219,9 @@ public:
     /// Категория поезда, выбранная в окне (аудит 3.8)
     int category() const;
 
+    /// Номер поезда (имя файла расписания) из окна; перенесён из «Положения»
+    QString trainName() const;
+
     QString warningsText() const;
     QString summaryText() const;
 
@@ -212,6 +239,8 @@ public:
         ColDeparture,
         ColRoute,
         ColSpeed,
+        ColPlatform,
+        ColRemove,
         ColCount
     };
 
@@ -219,6 +248,10 @@ public slots:
 
     /// Задать конечную точку
     void setEnd(const QString &trajectory, double coord);
+
+    /// Вставить строку новой станции между строками (row - индекс, перед которым
+    /// вставлять; вызывается зелёным «+» на границе строк, доступно проверкам)
+    void insertRowAt(int row);
 
 private slots:
 
@@ -231,7 +264,21 @@ private slots:
     void onRecalcNext();
     void onRecalcAll();
 
+    /// Убрать станцию из графика красным крестом (столбец «Удалить»)
+    void onRemoveRow();
+
+    /// В добавленной строке выбрана станция из выпадающего списка
+    void onAddedStationChosen();
+
 private:
+
+    /// Данные добавленной строки: имя станции, положение на пути и отступ от него
+    struct AddedRowInfo
+    {
+        QString name;
+        double s = 0.0;
+        double offset = 0.0;
+    };
 
     const Route &route_;
     const VehicleCatalog &catalog_;
@@ -250,6 +297,16 @@ private:
 
     bool loading_ = false;
 
+    /// Ошибка перестроения пути, из-за которой график оставлен прежним (правка:
+    /// график не сбрасывается, строка-виновник подсвечивается красным)
+    QString plan_error_;
+
+    /// Станция-виновник ошибки пути (пусто - виновата конечная точка или ни одна)
+    QString problem_station_;
+
+    /// Виновата конечная точка маршрута
+    bool problem_is_end_ = false;
+
     QLabel *end_label_ = nullptr;
     QComboBox *waypoint_combo_ = nullptr;
     QTimeEdit *start_edit_ = nullptr;
@@ -261,7 +318,13 @@ private:
     QLabel *traction_note_ = nullptr;
     QTableWidget *table_ = nullptr;
     QLabel *summary_ = nullptr;
-    QPlainTextEdit *warnings_ = nullptr;
+
+    /// Зелёный «+» на границе строк: вставить станцию между соседними
+    QToolButton *insert_btn_ = nullptr;
+    int insert_row_ = -1;
+
+    /// Замечания расчёта; пути в тексте кликабельны (QTextBrowser)
+    QTextBrowser *warnings_ = nullptr;
     QPushButton *apply_button_ = nullptr;
 
     /// Закреплённые станции трассы («через станцию»)
@@ -277,17 +340,74 @@ private:
     QComboBox *class_box_ = nullptr;
     QLabel *state_label_ = nullptr;
 
+    /// Номер поезда (имя файла расписания), перенесён из «Положения»
+    QLineEdit *name_edit_ = nullptr;
+
     /// Режим таблицы (аудит 3.5) и признак неприменённых изменений (аудит 3.4)
     bool simple_mode_ = false;
     bool dirty_ = false;
 
-    /// Номер станции плана для строки таблицы (-1 начало, -2 конец)
+    /// Номер станции плана для строки таблицы (-1 начало, -2 конец,
+    /// -10-k добавленная строка)
     QVector<int> row_station_;
+
+    /// Данные добавленных строк таблицы, по порядку создания
+    QVector<AddedRowInfo> row_added_;
 
     void rebuildPlan();
     void fillTable();
+
+    /// Добавить строку таблицы: ячейки, комбобоксы станции и виджеты режима;
+    /// added - строка с выпадающим списком станции (вставленная плюсом);
+    /// at - индекс вставки в середину таблицы (-1 - в конец); возвращает строку
+    int addTableRow(int station, const QString &name, double s, bool fixed,
+                    bool added = false, int at = -1);
+
     void readTable();
     void showResult();
+
+    /// Загрузить настройки станции из состояния в виджеты строки (галочка,
+    /// режим, путь, стоянка, запас, платформы)
+    void applyRowSettings(int r, const QString &name);
+
+    /// Показать ошибку расчёта: очистить расчётные колонки таблицы
+    void showFailure();
+
+    /// Путь перестроить не удалось, график оставлен прежним: предупреждение
+    /// и подсветка станции-виновника лёгким красным
+    void showPlanProblem();
+
+    /// Подсветить строку r как конфликтную (problem) или вернуть обычный вид
+    void highlightRow(int r, bool problem);
+
+    /// Имя станции в строке (текст ячейки «Станция»)
+    QString rowNameAt(int row) const;
+
+    /// Категория строки: 0 начало, 1 конец, 2 станция плана, 3 добавленная
+    int rowKindAt(int row) const;
+
+    /// Строка, в которой сидит виджет ячейки col (-1 - не найден)
+    int rowOfWidget(QWidget *w, int col) const;
+
+    /// Ближайшая к станции точка пути: s и отступ станции от пути. false -
+    /// станция не найдена в маршруте
+    bool nearestPathS(const QString &station, double *s, double *offset) const;
+
+    /// Заполнить комбобокс путей станции (выбранный путь - selected)
+    void fillTrackCombo(QComboBox *track, const QString &station, const QString &selected);
+
+    /// Вернуть прокрутку таблицы после перестроения: на прежнюю строку,
+    /// если она есть, иначе на прежнюю позицию
+    void restoreScroll(int saved, const QString &name, int kind);
+
+    /// Показать зелёный «+» на границе строк (row - индекс строки, перед которой
+    /// вставлять); row <= 0 - скрыть
+    void showInsertButton(int row);
+
+    /// Ячейка «Маршрут» и подсветка светофоров для строки k результата
+    void showRouteCell(int r, int k, const QColor &normalColor, const QColor &badColor,
+                       QVector<SignalMark> *marks);
+
     void markEdited();
     void updateRouteReport();
     TripOptions options() const;

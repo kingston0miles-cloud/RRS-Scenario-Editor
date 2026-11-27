@@ -17,6 +17,11 @@ option(RSE_BUILD_TESTS "Собирать тесты" ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
 
+# LinguistTools (этап 30): lrelease для перевода интерфейса. Если не найден -
+# сборка работает, но английский перевод не встраивается
+find_package(Qt6 QUIET COMPONENTS LinguistTools)
+set(RSE_TRANSLATIONS_AVAILABLE Qt6LinguistTools_FOUND)
+
 #------------------------------------------------------------------------------
 # Библиотека чтения маршрута RRS (только Qt Core, без графики)
 #------------------------------------------------------------------------------
@@ -117,6 +122,35 @@ target_include_directories(rse-ui PUBLIC src)
 target_link_libraries(rse-ui PUBLIC rse-route rse-catalog rse-scenario Qt6::Widgets)
 
 #------------------------------------------------------------------------------
+# Перевод интерфейса (этап 30): .qm коммитится рядом с .ts (translations/) и
+# встраивается в ресурс /translations. Обновление после правок строк:
+#   cmake --build build --target update-translations   (lupdate + lrelease)
+#------------------------------------------------------------------------------
+set(RSE_TS translations/rse-editor_en.ts)
+set(RSE_QM translations/rse-editor_en.qm)
+
+if(EXISTS ${CMAKE_SOURCE_DIR}/${RSE_QM})
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/${RSE_QM} PROPERTIES
+        QT_RESOURCE_ALIAS "rse-editor_en.qm")
+
+    qt_add_resources(rse-ui "rse-translations"
+        PREFIX "/translations"
+        FILES ${CMAKE_SOURCE_DIR}/${RSE_QM})
+else()
+    message(STATUS "translations/rse-editor_en.qm нет: английский перевод не встраивается")
+endif()
+
+if(TARGET Qt6::lrelease)
+    add_custom_target(update-translations
+        COMMAND Qt6::lupdate src/ -ts ${CMAKE_SOURCE_DIR}/${RSE_TS} -source-language ru -target-language en -no-obsolete
+        COMMAND Qt6::lrelease -silent ${CMAKE_SOURCE_DIR}/${RSE_TS} -qm ${CMAKE_SOURCE_DIR}/${RSE_QM}
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "lupdate + lrelease: translations/rse-editor_en")
+else()
+    message(STATUS "LinguistTools не найден: target update-translations недоступен")
+endif()
+
+#------------------------------------------------------------------------------
 # Приложение
 #------------------------------------------------------------------------------
 add_executable(rrs-scenario-editor src/main.cpp)
@@ -199,6 +233,13 @@ if(RSE_BUILD_TESTS)
     target_link_libraries(test-map-render PRIVATE rse-ui Qt6::Test)
     add_test(NAME map-render COMMAND test-map-render)
     set_tests_properties(map-render PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    # Английский перевод (этап 30): .qm встроен в ресурс rse-ui
+    add_executable(test-translation tests/test-translation.cpp)
+    target_link_libraries(test-translation PRIVATE rse-ui Qt6::Test)
+    add_test(NAME translation COMMAND test-translation)
+    set_tests_properties(translation PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     # Путь к каталогу реального маршрута для проверки на живых данных

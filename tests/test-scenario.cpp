@@ -6,20 +6,12 @@
 
 #include    "scenario/scenario.h"
 #include    "scenario/pathfinder.h"
+#include    "test-utils.h"
 
 using namespace rse;
 
 namespace
 {
-
-void writeFile(const QString &path, const QString &content)
-{
-    QDir().mkpath(QFileInfo(path).absolutePath());
-
-    QFile f(path);
-    QVERIFY2(f.open(QIODevice::WriteOnly), qPrintable(path));
-    f.write(content.toUtf8());
-}
 
 //------------------------------------------------------------------------------
 // Маршрут вдоль оси Y:
@@ -189,26 +181,27 @@ void TestScenario::orientationBySignals()
     Route r;
     QVERIFY2(r.load(tmp.path()), qPrintable(r.errorString()));
 
-    // Светофор Ч1 вперёд через стрелку: Q и R «туда», P - по цепочке через простой стык
-    QCOMPARE(r.orientation("Q"), 1);
-    QCOMPARE(r.orientation("R"), 1);
-    QCOMPARE(r.orientation("P"), 1);
+    // Светофор Ч1 - литера Bwd: ведёт движение -1 (назад) через стрелку
+    QCOMPARE(r.orientation("Q"), -1);
+    QCOMPARE(r.orientation("R"), -1);
+    // P переносится от Q по простому стыку j1
+    QCOMPARE(r.orientation("P"), -1);
 
-    // Литера Fwd - светофор в обратную сторону: «обратно»
-    QCOMPARE(r.orientation("T1"), -1);
-    QCOMPARE(r.orientation("T2"), -1);
+    // Литера Fwd ведёт движение +1 (вперёд) через стрелку
+    QCOMPARE(r.orientation("T1"), 1);
+    QCOMPARE(r.orientation("T2"), 1);
 
     // Только светофор на неправильный путь (…Д): правильное направление обратное
-    QCOMPARE(r.orientation("U1"), -1);
-    QCOMPARE(r.orientation("U2"), -1);
+    QCOMPARE(r.orientation("U1"), 1);
+    QCOMPARE(r.orientation("U2"), 1);
 
     // Маневровые светофоры направления не задают
     QCOMPARE(r.orientation("V1"), 0);
     QCOMPARE(r.orientation("V2"), 0);
 
-    // Траектория Z примыкает концом: направление через стрелку - против неё
-    QCOMPARE(r.orientation("X"), 1);
-    QCOMPARE(r.orientation("Z"), -1);
+    // Bwd Ч5 ведёт движение -1 вдоль X; Z примыкает концом - движение против неё
+    QCOMPARE(r.orientation("X"), -1);
+    QCOMPARE(r.orientation("Z"), 1);
 }
 
 //------------------------------------------------------------------------------

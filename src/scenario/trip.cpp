@@ -198,6 +198,8 @@ TripPlan buildTripPlan(const Route &route, const VehicleCatalog &catalog, const 
 
     plan.path.found = true;
 
+    int via_index = 0;
+
     for (const TripVia &v : points)
     {
         const PathResult leg = findPath(route, from_traj, from_coord, from_dir, v.trajectory, v.coord);
@@ -205,6 +207,7 @@ TripPlan buildTripPlan(const Route &route, const VehicleCatalog &catalog, const 
         if (!leg.found)
         {
             plan.path = leg;
+            plan.failedVia = via_index;
             break;
         }
 
@@ -215,12 +218,15 @@ TripPlan buildTripPlan(const Route &route, const VehicleCatalog &catalog, const 
 
         plan.path.length += leg.length;
         plan.path.wrongWay = plan.path.wrongWay || leg.wrongWay;
+        plan.path.wrongTrajectories << leg.wrongTrajectories;
         plan.path.switchesCrossed += leg.switchesCrossed;
         plan.path.switchNames << leg.switchNames;
 
         from_traj = v.trajectory;
         from_coord = v.coord;
         from_dir = leg.segments.isEmpty() ? from_dir : leg.segments.last().dir;
+
+        ++via_index;
     }
 
     if (!plan.path.found)
@@ -241,8 +247,27 @@ TripPlan buildTripPlan(const Route &route, const VehicleCatalog &catalog, const 
 
     if (plan.path.wrongWay)
     {
-        plan.warnings << QObject::tr("Путь частично идёт по неправильному пути "
-                                     "(против направления светофоров)");
+        // Список путей с кликабельными ссылками: щелчок переносит камеру
+        // карты к пути (traj: имя траектории)
+        QStringList links;
+
+        for (const QString &traj : plan.path.wrongTrajectories)
+        {
+            links << QStringLiteral("<a href=\"traj:%1\">%1</a>").arg(traj);
+        }
+
+        if (!links.isEmpty())
+        {
+            plan.warnings << QObject::tr("Путь частично идёт по неправильному пути "
+                                         "(против направления светофоров): %1 "
+                                         "(щёлкните по пути, чтобы показать его на карте)")
+                                 .arg(links.join(QStringLiteral(", ")));
+        }
+        else
+        {
+            plan.warnings << QObject::tr("Путь частично идёт по неправильному пути "
+                                         "(против направления светофоров)");
+        }
     }
 
     if (plan.path.switchesCrossed > 0)
@@ -476,6 +501,57 @@ TripResult computeTrip(const TripPlan &plan, const TripOptions &opts, const Rout
                         sp.extraMin, sp.manualArrival, sp.manualDeparture});
     }
 
+    // Станции, добавленные в график вручную: вставляются по положению на пути,
+    // между обычными строками; слишком близкие к соседям не попадают в график
+    QVector<ExtraStop> extras = opts.extraStops;
+    QStringList extras_warnings;
+
+    std::sort(extras.begin(), extras.end(), [](const ExtraStop &a, const ExtraStop &b)
+    {
+        return a.s < b.s;
+    });
+
+    for (const ExtraStop &es : extras)
+    {
+        if (es.name.isEmpty() || (es.mode == StopMode::Skip))
+        {
+            continue;
+        }
+
+        const double s = std::clamp(es.s, 0.0, plan.length);
+
+        if ((s < 30.0) || (s > plan.length - 30.0))
+        {
+            continue;
+        }
+
+        int at = 0;
+
+        while ((at < rows.size()) && (rows[at].s < s))
+        {
+            ++at;
+        }
+
+        const double prev = (at > 0) ? rows[at - 1].s : -1.0e9;
+        const double next = (at < rows.size()) ? rows[at].s : 1.0e9;
+
+        if ((s - prev < 30.0) || (next - s < 30.0))
+        {
+            continue;
+        }
+
+        rows.insert(at, {es.name, s, es.mode,
+                         (es.mode == StopMode::Stop) ? std::max(60, ceilMinute(es.dwellSec)) : 0,
+                         es.extraMin, es.manualArrival, es.manualDeparture});
+
+        if (es.offset > STATION_RADIUS)
+        {
+            extras_warnings << QObject::tr("«%1» лежит в %2 м от пути: в расписании она "
+                                           "привязана к ближайшей точке пути")
+                                   .arg(es.name).arg(es.offset, 0, 'f', 0);
+        }
+    }
+
     rows.push_back({opts.endName.isEmpty() ? nearest_name(plan.length, QObject::tr("Прибытие"))
                                            : opts.endName,
                     plan.length, StopMode::Stop, 0, opts.endExtraMin, opts.endManualArrival, -1});
@@ -500,6 +576,7 @@ TripResult computeTrip(const TripPlan &plan, const TripOptions &opts, const Rout
     }
 
     res.warnings = run.warnings;
+    res.warnings << extras_warnings;
     res.runTime = run.timeAt(plan.length, step);
 
     // Запас: на весь путь пропорционально времени хода перегонов + личный на перегон
@@ -714,9 +791,11 @@ TripResult computeTrip(const TripPlan &plan, const TripOptions &opts, const Rout
                                 ? QObject::tr("встречное движение")
                                 : QObject::tr("слишком малый интервал между поездами");
 
+                        res.conflictTrajectories << mine.trajectory;
+
                         res.warnings << QObject::tr("Возможный конфликт с поездом «%1» около %2 "
-                                                    "(%3, путь %4): сдвиньте время отправления "
-                                                    "или увеличьте запас")
+                                                    "(%3, путь <a href=\"traj:%4\">%4</a>): "
+                                                    "сдвиньте время отправления или увеличьте запас")
                                         .arg(other.name, formatClock(mine.time), kind, mine.trajectory);
                         found = true;
                         break;
@@ -735,6 +814,8 @@ TripResult computeTrip(const TripPlan &plan, const TripOptions &opts, const Rout
     {
         res.warnings << w;
     }
+
+    res.conflictTrajectories.removeDuplicates();
 
     Q_UNUSED(route);
 

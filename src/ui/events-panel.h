@@ -37,6 +37,9 @@ signals:
     void removeRequested(int index);
     void moveRequested(int index, int delta);
 
+    /// Показать событие на карте: перелёт к траектории события
+    void locateRequested(int index);
+
 private:
 
     const QVector<ScenarioEvent> *events_ = nullptr;
@@ -46,6 +49,7 @@ private:
     QPushButton *remove_ = nullptr;
     QPushButton *up_ = nullptr;
     QPushButton *down_ = nullptr;
+    QPushButton *locate_ = nullptr;
 
     void updateButtons();
 };

@@ -5,23 +5,13 @@
 #include    <QTemporaryDir>
 
 #include    "route/route.h"
+#include    "test-utils.h"
 
 using namespace rse;
 
 namespace
 {
 
-//------------------------------------------------------------------------------
-// Записать текстовый файл (UTF-8), создав каталоги
-//------------------------------------------------------------------------------
-void writeFile(const QString &path, const QString &content)
-{
-    QDir().mkpath(QFileInfo(path).absolutePath());
-
-    QFile f(path);
-    QVERIFY2(f.open(QIODevice::WriteOnly), qPrintable(path));
-    f.write(content.toUtf8());
-}
 
 //------------------------------------------------------------------------------
 // Небольшой маршрут с известными ответами
@@ -76,6 +66,114 @@ void buildSyntheticRoute(const QString &root)
               "<Config><Route><Title>Тестовый маршрут</Title></Route></Config>\n");
 }
 
+//------------------------------------------------------------------------------
+// Маршрут для проверки вывода направлений. Двухпутный перегон t1a/t1b и
+// t2a/t2b (второй путь на 4.35 м влево - при движении +1 вдоль первой нитки
+// ось +Y плана смотрит влево), пара станционных путей s1/s2 ОДНОГО
+// направления с чётными выходными, путь c с конфликтом литер без пары и
+// цепочка x1 - c2 - x2 с конфликтом в середине
+//------------------------------------------------------------------------------
+void buildDirectionRoute(const QString &root)
+{
+    writeFile(root + "/topology/trajectories/t1a.traj",
+              "0 0 0 0\n100 0 0 100\n200 0 0 200\n300 0 0 300\n400 0 0 400\n500 0 0 500\n");
+    writeFile(root + "/topology/trajectories/t1b.traj",
+              "500 0 0 0\n600 0 0 100\n700 0 0 200\n800 0 0 300\n900 0 0 400\n1000 0 0 500\n");
+    writeFile(root + "/topology/trajectories/t2a.traj",
+              "0 4.35 0 0\n100 4.35 0 100\n200 4.35 0 200\n300 4.35 0 300\n400 4.35 0 400\n500 4.35 0 500\n");
+    writeFile(root + "/topology/trajectories/t2b.traj",
+              "500 4.35 0 0\n600 4.35 0 100\n700 4.35 0 200\n800 4.35 0 300\n900 4.35 0 400\n1000 4.35 0 500\n");
+
+    writeFile(root + "/topology/trajectories/s1.traj",
+              "0 -200 0 0\n100 -200 0 100\n200 -200 0 200\n300 -200 0 300\n"
+              "400 -200 0 400\n500 -200 0 500\n600 -200 0 600\n");
+    writeFile(root + "/topology/trajectories/s2.traj",
+              "0 -195.65 0 0\n100 -195.65 0 100\n200 -195.65 0 200\n300 -195.65 0 300\n"
+              "400 -195.65 0 400\n500 -195.65 0 500\n600 -195.65 0 600\n");
+
+    writeFile(root + "/topology/trajectories/c.traj",
+              "0 -9 0 0\n100 -9 0 100\n200 -9 0 200\n300 -9 0 300\n400 -9 0 400\n");
+
+    writeFile(root + "/topology/trajectories/x1.traj",
+              "600 -9 0 0\n700 -9 0 100\n800 -9 0 200\n900 -9 0 300\n");
+    writeFile(root + "/topology/trajectories/c2.traj",
+              "900 -9 0 0\n1000 -9 0 100\n1100 -9 0 200\n1200 -9 0 300\n");
+    writeFile(root + "/topology/trajectories/x2.traj",
+              "1200 -9 0 0\n1300 -9 0 100\n1400 -9 0 200\n1500 -9 0 300\n");
+
+    writeFile(root + "/topology/topology.xml",
+              "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+              "<Config>\n"
+              "  <Switch>\n"
+              "    <Name>j1</Name>\n"
+              "    <bwdPlusTraj>t1a</bwdPlusTraj>\n"
+              "    <fwdPlusTraj>t1b</fwdPlusTraj>\n"
+              "  </Switch>\n"
+              "  <Switch>\n"
+              "    <Name>j2</Name>\n"
+              "    <bwdPlusTraj>t2a</bwdPlusTraj>\n"
+              "    <fwdPlusTraj>t2b</fwdPlusTraj>\n"
+              "  </Switch>\n"
+              "  <Switch>\n"
+              "    <Name>e1</Name>\n"
+              "    <bwdPlusTraj>s1</bwdPlusTraj>\n"
+              "    <SignalLiterBwd>Ч1</SignalLiterBwd>\n"
+              "  </Switch>\n"
+              "  <Switch>\n"
+              "    <Name>e2</Name>\n"
+              "    <bwdPlusTraj>s2</bwdPlusTraj>\n"
+              "    <SignalLiterBwd>Ч2</SignalLiterBwd>\n"
+              "  </Switch>\n"
+              "  <Switch>\n"
+              "    <Name>csw1</Name>\n"
+              "    <bwdPlusTraj>c</bwdPlusTraj>\n"
+              "    <SignalLiterFwd>Н1</SignalLiterFwd>\n"
+              "  </Switch>\n"
+              "  <Switch>\n"
+              "    <Name>csw2</Name>\n"
+              "    <bwdPlusTraj>c</bwdPlusTraj>\n"
+              "    <SignalLiterBwd>Ч2</SignalLiterBwd>\n"
+              "  </Switch>\n"
+              "  <Switch>\n"
+              "    <Name>xsw1</Name>\n"
+              "    <bwdPlusTraj>x1</bwdPlusTraj>\n"
+              "    <SignalLiterFwd>Н</SignalLiterFwd>\n"
+              "  </Switch>\n"
+              "  <Switch>\n"
+              "    <Name>jc1</Name>\n"
+              "    <bwdPlusTraj>x1</bwdPlusTraj>\n"
+              "    <fwdPlusTraj>c2</fwdPlusTraj>\n"
+              "  </Switch>\n"
+              "  <Switch>\n"
+              "    <Name>ccsw1</Name>\n"
+              "    <bwdPlusTraj>c2</bwdPlusTraj>\n"
+              "    <SignalLiterFwd>Н1</SignalLiterFwd>\n"
+              "  </Switch>\n"
+              "  <Switch>\n"
+              "    <Name>ccsw2</Name>\n"
+              "    <bwdPlusTraj>c2</bwdPlusTraj>\n"
+              "    <SignalLiterBwd>Ч1</SignalLiterBwd>\n"
+              "  </Switch>\n"
+              "  <Switch>\n"
+              "    <Name>jc2</Name>\n"
+              "    <bwdPlusTraj>c2</bwdPlusTraj>\n"
+              "    <fwdPlusTraj>x2</fwdPlusTraj>\n"
+              "  </Switch>\n"
+              "  <Switch>\n"
+              "    <Name>xsw2</Name>\n"
+              "    <bwdPlusTraj>x2</bwdPlusTraj>\n"
+              "    <SignalLiterBwd>Ч</SignalLiterBwd>\n"
+              "  </Switch>\n"
+              "</Config>\n");
+
+    writeFile(root + "/topology/stations.conf",
+              "Станция-1\t10\t20\t0\r\n");
+
+    writeFile(root + "/description.xml",
+              "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+              "<Config><Route><Title>Маршрут направлений</Title></Route></Config>\n");
+}
+
 } // namespace
 
 //------------------------------------------------------------------------------
@@ -98,6 +196,10 @@ private slots:
     void pointAtInterpolates();
     void nearestProjectsToTrajectory();
     void loadsRealRoute();
+    void directionDoubleTrackByPair();
+    void directionPairRejectedBySignals();
+    void directionConflictMeansBidirectional();
+    void realRouteDirectionStats();
 };
 
 //------------------------------------------------------------------------------
@@ -411,6 +513,133 @@ void TestRoute::loadsRealRoute()
     }
 
     qInfo() << "Путевых точек с несуществующей траекторией:" << dangling;
+}
+
+//------------------------------------------------------------------------------
+// Двухпутный перегон без литер: направления выводит пара путей по
+// правостороннему движению РЖД (правильный путь правый, встречный слева)
+//------------------------------------------------------------------------------
+void TestRoute::directionDoubleTrackByPair()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    buildDirectionRoute(tmp.path());
+
+    Route r;
+    QVERIFY2(r.load(tmp.path()), qPrintable(r.errorString()));
+
+    QCOMPARE(r.pathDirection("t1a"), PathDirection::Fwd);
+    QCOMPARE(r.pathDirection("t1b"), PathDirection::Fwd);
+    QCOMPARE(r.pathDirection("t2a"), PathDirection::Bwd);
+    QCOMPARE(r.pathDirection("t2b"), PathDirection::Bwd);
+
+    QCOMPARE(r.orientation("t1a"), 1);
+    QCOMPARE(r.orientation("t2a"), -1);
+}
+
+//------------------------------------------------------------------------------
+// Пара станционных путей одного направления (оба с чётными выходными):
+// пара, противоречащая литерам, отбрасывается, пути остаются с голосами -1
+//------------------------------------------------------------------------------
+void TestRoute::directionPairRejectedBySignals()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    buildDirectionRoute(tmp.path());
+
+    Route r;
+    QVERIFY2(r.load(tmp.path()), qPrintable(r.errorString()));
+
+    QCOMPARE(r.pathDirection("s1"), PathDirection::Bwd);
+    QCOMPARE(r.pathDirection("s2"), PathDirection::Bwd);
+    QVERIFY(r.pathDirection("s1") != PathDirection::Both);
+    QVERIFY(r.pathDirection("s2") != PathDirection::Both);
+}
+
+//------------------------------------------------------------------------------
+// Конфликт литер (светофоры в обе стороны) без разрешающей пары -
+// двусторонний путь: orientation() = 0, pathDirection() = Both. Перенос по
+// стыкам не назначает конфликтной траектории случайное направление, соседи
+// сохраняют свои
+//------------------------------------------------------------------------------
+void TestRoute::directionConflictMeansBidirectional()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    buildDirectionRoute(tmp.path());
+
+    Route r;
+    QVERIFY2(r.load(tmp.path()), qPrintable(r.errorString()));
+
+    QCOMPARE(r.pathDirection("c"), PathDirection::Both);
+    QCOMPARE(r.orientation("c"), 0);
+
+    QCOMPARE(r.pathDirection("c2"), PathDirection::Both);
+    QCOMPARE(r.orientation("c2"), 0);
+
+    QCOMPARE(r.pathDirection("x1"), PathDirection::Fwd);
+    QCOMPARE(r.pathDirection("x2"), PathDirection::Bwd);
+}
+
+//------------------------------------------------------------------------------
+// Статистика направлений на реальных маршрутах (список каталогов через ';'
+// в RRS_DIRECTION_ROUTES): покрытие классификацией Fwd/Bwd/Both/Unknown
+//------------------------------------------------------------------------------
+void TestRoute::realRouteDirectionStats()
+{
+    const QString dirs = qEnvironmentVariable("RRS_DIRECTION_ROUTES");
+
+    if (dirs.isEmpty())
+    {
+        QSKIP("RRS_DIRECTION_ROUTES не задан: статистика направлений пропущена");
+    }
+
+    const QStringList list = dirs.split(';', Qt::SkipEmptyParts);
+
+    QVERIFY(!list.isEmpty());
+
+    for (const QString &raw : list)
+    {
+        const QString dir = raw.trimmed();
+
+        Route r;
+        QVERIFY2(r.load(dir), qPrintable(r.errorString()));
+
+        int fwd = 0;
+        int bwd = 0;
+        int both = 0;
+        int unknown = 0;
+
+        for (auto it = r.trajectories().constBegin(); it != r.trajectories().constEnd(); ++it)
+        {
+            switch (r.pathDirection(it.key()))
+            {
+                case PathDirection::Fwd:
+                    ++fwd;
+                    break;
+
+                case PathDirection::Bwd:
+                    ++bwd;
+                    break;
+
+                case PathDirection::Both:
+                    ++both;
+                    break;
+
+                case PathDirection::Unknown:
+                    ++unknown;
+                    break;
+            }
+        }
+
+        const int total = fwd + bwd + both + unknown;
+        const double classified = 100.0 * (fwd + bwd + both) / std::max(total, 1);
+
+        qInfo().noquote() << dir << ':' << total << "траекторий; туда" << fwd
+                          << ", обратно" << bwd << ", двусторонних" << both
+                          << ", неизвестно" << unknown << '-'
+                          << QString::number(classified, 'f', 1) << "% классифицировано";
+    }
 }
 
 QTEST_APPLESS_MAIN(TestRoute)

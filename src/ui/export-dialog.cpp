@@ -3,6 +3,8 @@
 #include    "scenario/trip.h"
 
 #include    <QCheckBox>
+#include    <QFileDialog>
+#include    <QFileInfo>
 #include    <QFormLayout>
 #include    <QHash>
 #include    <QHBoxLayout>
@@ -63,11 +65,50 @@ ExportDialog::ExportDialog(const Route &route, const VehicleCatalog &catalog,
     overwrite_ = new QCheckBox(tr("Заменить существующий сценарий с таким именем"), this);
     form->addRow(QString(), overwrite_);
 
-    triggers_ = new QCheckBox(tr("Триггеры маршрутов по графикам с очерёдностью по категории поезда"), this);
+    triggers_ = new QCheckBox(tr("Дополнительные события маршрутов для поездов с автоведением"), this);
     triggers_->setChecked(true);
-    triggers_->setToolTip(tr("Светофоры и стрелки переключаются под расписание; пассажирские "
-                             "получают маршруты раньше грузовых, скорые - раньше обычных"));
+    triggers_->setToolTip(tr("Обязательные события для поездов без автоведения создаются всегда. "
+                             "Этот флажок дополнительно включает события и очерёдность "
+                             "маршрутов для поездов с автоведением."));
     form->addRow(QString(), triggers_);
+
+    // Пакет-дополнение (этап 29): копия сценария отдельным деревом для передачи
+    addon_check_ = new QCheckBox(tr("Собрать пакет-дополнение (папку для копирования в игру)"), this);
+    addon_check_->setToolTip(tr("Рядом с записью сценария собирается каталог с деревом "
+                                "routes/<маршрут>/scenarios и cfg/trains - его можно передать "
+                                "другому игроку целиком"));
+    form->addRow(QString(), addon_check_);
+
+    auto *addon_row = new QHBoxLayout;
+    addon_dir_ = new QLineEdit(this);
+    addon_dir_->setPlaceholderText(tr("Каталог для пакета (создаётся при необходимости)"));
+    auto *addon_browse = new QPushButton(tr("Выбрать…"), this);
+    addon_row->addWidget(addon_dir_, 1);
+    addon_row->addWidget(addon_browse);
+    form->addRow(tr("Пакет:"), addon_row);
+
+    connect(addon_check_, &QCheckBox::toggled, addon_dir_, &QLineEdit::setEnabled);
+    connect(addon_check_, &QCheckBox::toggled, addon_dir_, [this](bool on)
+    {
+        if (on && addon_dir_->text().trimmed().isEmpty())
+        {
+            addon_dir_->setText(QFileInfo(route_.dir()).absolutePath() + QStringLiteral("-пакет"));
+        }
+    });
+
+    connect(addon_browse, &QPushButton::clicked, this, [this]
+    {
+        const QString dir = QFileDialog::getExistingDirectory(
+            this, tr("Каталог для пакета-дополнения"), addon_dir_->text().trimmed());
+
+        if (!dir.isEmpty())
+        {
+            addon_dir_->setText(dir);
+            addon_check_->setChecked(true);
+        }
+    });
+
+    addon_dir_->setEnabled(false);
 
     // Ссылка на просмотр того, что именно уйдёт в main.lua (этап 19, аудит 4.2)
     auto_link_ = new QLabel(this);
@@ -131,6 +172,7 @@ ExportOptions ExportDialog::options() const
     o.info.startTime = auto_start_->isChecked() ? -1 : QTime(0, 0).secsTo(start_edit_->time());
     o.overwrite = overwrite_->isChecked();
     o.autoTriggers = triggers_->isChecked();
+    o.addonDir = addon_check_->isChecked() ? addon_dir_->text().trimmed() : QString();
 
     return o;
 }
@@ -209,12 +251,13 @@ void ExportDialog::update()
         }
     }
 
-    triggers_->setText(triggers_->isChecked() && !plan.autoEvents.isEmpty()
-        ? tr("Триггеры маршрутов по графикам (будет создано событий: %1)").arg(plan.autoEvents.size())
-        : tr("Триггеры маршрутов по графикам с очерёдностью по категории поезда"));
+    triggers_->setText(!plan.autoEvents.isEmpty()
+        ? tr("События маршрутов по графикам (будет создано: %1)").arg(plan.autoEvents.size())
+        : tr("Дополнительные события маршрутов для поездов с автоведением"));
 
-    // Просмотр того, что именно будет создано по графикам
-    const bool has_auto = triggers_->isChecked() && !plan.autoEvents.isEmpty();
+    // Просмотр включает обязательные события поездов без автоведения даже тогда,
+    // когда дополнительные события для поездов-ботов отключены.
+    const bool has_auto = !plan.autoEvents.isEmpty();
     auto_link_->setVisible(has_auto);
     auto_tree_->setVisible(has_auto && auto_details_);
 

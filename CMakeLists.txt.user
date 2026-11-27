@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE QtCreatorProject>
-<!-- Written by QtCreator 12.0.84, 2026-11-25T13:05:39. -->
+<!-- Written by QtCreator 12.0.84, 2026-11-26T20:52:51. -->
 <qtcreator>
  <data>
   <variable>EnvironmentId</variable>
@@ -108,7 +108,7 @@
 -DCMAKE_C_COMPILER:FILEPATH=%{Compiler:Executable:C}
 -DCMAKE_CXX_COMPILER:FILEPATH=%{Compiler:Executable:Cxx}
 -DCMAKE_CXX_FLAGS_INIT:STRING=%{Qt:QML_DEBUG_FLAG}</value>
-    <value type="QString" key="ProjectExplorer.BuildConfiguration.BuildDirectory">D:\RRS\rrs-scenario-editor-stage21\rrs-scenario-editor\build\Desktop-Release</value>
+    <value type="QString" key="ProjectExplorer.BuildConfiguration.BuildDirectory">D:\RRS\rrs-scenario-editor-stage36-source\rrs-scenario-editor\build\Desktop-Release</value>
     <valuemap type="QVariantMap" key="ProjectExplorer.BuildConfiguration.BuildStepList.0">
      <valuemap type="QVariantMap" key="ProjectExplorer.BuildStepList.Step.0">
       <value type="QString" key="CMakeProjectManager.MakeStep.BuildPreset"></value>
@@ -182,7 +182,7 @@
     <value type="bool" key="RunConfiguration.UseCppDebuggerAuto">true</value>
     <value type="bool" key="RunConfiguration.UseLibrarySearchPath">true</value>
     <value type="bool" key="RunConfiguration.UseQmlDebuggerAuto">true</value>
-    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage21/rrs-scenario-editor/build/Desktop-Release</value>
+    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage36-source/rrs-scenario-editor/build/Desktop-Release</value>
    </valuemap>
    <valuemap type="QVariantMap" key="ProjectExplorer.Target.RunConfiguration.1">
     <value type="bool" key="Analyzer.Perf.Settings.UseGlobalSettings">true</value>
@@ -201,7 +201,7 @@
     <value type="bool" key="RunConfiguration.UseCppDebuggerAuto">true</value>
     <value type="bool" key="RunConfiguration.UseLibrarySearchPath">true</value>
     <value type="bool" key="RunConfiguration.UseQmlDebuggerAuto">true</value>
-    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage21/rrs-scenario-editor/build/Desktop-Release</value>
+    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage36-source/rrs-scenario-editor/build/Desktop-Release</value>
    </valuemap>
    <valuemap type="QVariantMap" key="ProjectExplorer.Target.RunConfiguration.10">
     <value type="bool" key="Analyzer.Perf.Settings.UseGlobalSettings">true</value>
@@ -220,7 +220,7 @@
     <value type="bool" key="RunConfiguration.UseCppDebuggerAuto">true</value>
     <value type="bool" key="RunConfiguration.UseLibrarySearchPath">true</value>
     <value type="bool" key="RunConfiguration.UseQmlDebuggerAuto">true</value>
-    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage21/rrs-scenario-editor/build/Desktop-Release</value>
+    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage36-source/rrs-scenario-editor/build/Desktop-Release</value>
    </valuemap>
    <valuemap type="QVariantMap" key="ProjectExplorer.Target.RunConfiguration.11">
     <value type="bool" key="Analyzer.Perf.Settings.UseGlobalSettings">true</value>
@@ -239,7 +239,7 @@
     <value type="bool" key="RunConfiguration.UseCppDebuggerAuto">true</value>
     <value type="bool" key="RunConfiguration.UseLibrarySearchPath">true</value>
     <value type="bool" key="RunConfiguration.UseQmlDebuggerAuto">true</value>
-    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage21/rrs-scenario-editor/build/Desktop-Release</value>
+    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage36-source/rrs-scenario-editor/build/Desktop-Release</value>
    </valuemap>
    <valuemap type="QVariantMap" key="ProjectExplorer.Target.RunConfiguration.12">
     <value type="bool" key="Analyzer.Perf.Settings.UseGlobalSettings">true</value>
@@ -258,9 +258,28 @@
     <value type="bool" key="RunConfiguration.UseCppDebuggerAuto">true</value>
     <value type="bool" key="RunConfiguration.UseLibrarySearchPath">true</value>
     <value type="bool" key="RunConfiguration.UseQmlDebuggerAuto">true</value>
-    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage21/rrs-scenario-editor/build/Desktop-Release</value>
+    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage36-source/rrs-scenario-editor/build/Desktop-Release</value>
    </valuemap>
    <valuemap type="QVariantMap" key="ProjectExplorer.Target.RunConfiguration.13">
+    <value type="bool" key="Analyzer.Perf.Settings.UseGlobalSettings">true</value>
+    <value type="bool" key="Analyzer.QmlProfiler.Settings.UseGlobalSettings">true</value>
+    <value type="int" key="Analyzer.Valgrind.Callgrind.CostFormat">0</value>
+    <value type="bool" key="Analyzer.Valgrind.Settings.UseGlobalSettings">true</value>
+    <valuelist type="QVariantList" key="CustomOutputParsers"/>
+    <value type="int" key="PE.EnvironmentAspect.Base">2</value>
+    <valuelist type="QVariantList" key="PE.EnvironmentAspect.Changes"/>
+    <value type="bool" key="PE.EnvironmentAspect.PrintOnRun">false</value>
+    <value type="QString" key="PerfRecordArgsId">-e cpu-cycles --call-graph &quot;dwarf,4096&quot; -F 250</value>
+    <value type="QString" key="ProjectExplorer.ProjectConfiguration.DisplayName">test-translation</value>
+    <value type="QString" key="ProjectExplorer.ProjectConfiguration.Id">CMakeProjectManager.CMakeRunConfiguration.test-translation</value>
+    <value type="QString" key="ProjectExplorer.RunConfiguration.BuildKey">test-translation</value>
+    <value type="bool" key="ProjectExplorer.RunConfiguration.Customized">false</value>
+    <value type="bool" key="RunConfiguration.UseCppDebuggerAuto">true</value>
+    <value type="bool" key="RunConfiguration.UseLibrarySearchPath">true</value>
+    <value type="bool" key="RunConfiguration.UseQmlDebuggerAuto">true</value>
+    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage36-source/rrs-scenario-editor/build/Desktop-Release</value>
+   </valuemap>
+   <valuemap type="QVariantMap" key="ProjectExplorer.Target.RunConfiguration.14">
     <value type="bool" key="Analyzer.Perf.Settings.UseGlobalSettings">true</value>
     <value type="bool" key="Analyzer.QmlProfiler.Settings.UseGlobalSettings">true</value>
     <value type="int" key="Analyzer.Valgrind.Callgrind.CostFormat">0</value>
@@ -277,7 +296,7 @@
     <value type="bool" key="RunConfiguration.UseCppDebuggerAuto">true</value>
     <value type="bool" key="RunConfiguration.UseLibrarySearchPath">true</value>
     <value type="bool" key="RunConfiguration.UseQmlDebuggerAuto">true</value>
-    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage21/rrs-scenario-editor/build/Desktop-Release</value>
+    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage36-source/rrs-scenario-editor/build/Desktop-Release</value>
    </valuemap>
    <valuemap type="QVariantMap" key="ProjectExplorer.Target.RunConfiguration.2">
     <value type="bool" key="Analyzer.Perf.Settings.UseGlobalSettings">true</value>
@@ -296,7 +315,7 @@
     <value type="bool" key="RunConfiguration.UseCppDebuggerAuto">true</value>
     <value type="bool" key="RunConfiguration.UseLibrarySearchPath">true</value>
     <value type="bool" key="RunConfiguration.UseQmlDebuggerAuto">true</value>
-    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage21/rrs-scenario-editor/build/Desktop-Release</value>
+    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage36-source/rrs-scenario-editor/build/Desktop-Release</value>
    </valuemap>
    <valuemap type="QVariantMap" key="ProjectExplorer.Target.RunConfiguration.3">
     <value type="bool" key="Analyzer.Perf.Settings.UseGlobalSettings">true</value>
@@ -315,7 +334,7 @@
     <value type="bool" key="RunConfiguration.UseCppDebuggerAuto">true</value>
     <value type="bool" key="RunConfiguration.UseLibrarySearchPath">true</value>
     <value type="bool" key="RunConfiguration.UseQmlDebuggerAuto">true</value>
-    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage21/rrs-scenario-editor/build/Desktop-Release</value>
+    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage36-source/rrs-scenario-editor/build/Desktop-Release</value>
    </valuemap>
    <valuemap type="QVariantMap" key="ProjectExplorer.Target.RunConfiguration.4">
     <value type="bool" key="Analyzer.Perf.Settings.UseGlobalSettings">true</value>
@@ -334,7 +353,7 @@
     <value type="bool" key="RunConfiguration.UseCppDebuggerAuto">true</value>
     <value type="bool" key="RunConfiguration.UseLibrarySearchPath">true</value>
     <value type="bool" key="RunConfiguration.UseQmlDebuggerAuto">true</value>
-    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage21/rrs-scenario-editor/build/Desktop-Release</value>
+    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage36-source/rrs-scenario-editor/build/Desktop-Release</value>
    </valuemap>
    <valuemap type="QVariantMap" key="ProjectExplorer.Target.RunConfiguration.5">
     <value type="bool" key="Analyzer.Perf.Settings.UseGlobalSettings">true</value>
@@ -353,7 +372,7 @@
     <value type="bool" key="RunConfiguration.UseCppDebuggerAuto">true</value>
     <value type="bool" key="RunConfiguration.UseLibrarySearchPath">true</value>
     <value type="bool" key="RunConfiguration.UseQmlDebuggerAuto">true</value>
-    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage21/rrs-scenario-editor/build/Desktop-Release</value>
+    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage36-source/rrs-scenario-editor/build/Desktop-Release</value>
    </valuemap>
    <valuemap type="QVariantMap" key="ProjectExplorer.Target.RunConfiguration.6">
     <value type="bool" key="Analyzer.Perf.Settings.UseGlobalSettings">true</value>
@@ -372,7 +391,7 @@
     <value type="bool" key="RunConfiguration.UseCppDebuggerAuto">true</value>
     <value type="bool" key="RunConfiguration.UseLibrarySearchPath">true</value>
     <value type="bool" key="RunConfiguration.UseQmlDebuggerAuto">true</value>
-    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage21/rrs-scenario-editor/build/Desktop-Release</value>
+    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage36-source/rrs-scenario-editor/build/Desktop-Release</value>
    </valuemap>
    <valuemap type="QVariantMap" key="ProjectExplorer.Target.RunConfiguration.7">
     <value type="bool" key="Analyzer.Perf.Settings.UseGlobalSettings">true</value>
@@ -391,7 +410,7 @@
     <value type="bool" key="RunConfiguration.UseCppDebuggerAuto">true</value>
     <value type="bool" key="RunConfiguration.UseLibrarySearchPath">true</value>
     <value type="bool" key="RunConfiguration.UseQmlDebuggerAuto">true</value>
-    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage21/rrs-scenario-editor/build/Desktop-Release</value>
+    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage36-source/rrs-scenario-editor/build/Desktop-Release</value>
    </valuemap>
    <valuemap type="QVariantMap" key="ProjectExplorer.Target.RunConfiguration.8">
     <value type="bool" key="Analyzer.Perf.Settings.UseGlobalSettings">true</value>
@@ -410,7 +429,7 @@
     <value type="bool" key="RunConfiguration.UseCppDebuggerAuto">true</value>
     <value type="bool" key="RunConfiguration.UseLibrarySearchPath">true</value>
     <value type="bool" key="RunConfiguration.UseQmlDebuggerAuto">true</value>
-    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage21/rrs-scenario-editor/build/Desktop-Release</value>
+    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage36-source/rrs-scenario-editor/build/Desktop-Release</value>
    </valuemap>
    <valuemap type="QVariantMap" key="ProjectExplorer.Target.RunConfiguration.9">
     <value type="bool" key="Analyzer.Perf.Settings.UseGlobalSettings">true</value>
@@ -429,9 +448,9 @@
     <value type="bool" key="RunConfiguration.UseCppDebuggerAuto">true</value>
     <value type="bool" key="RunConfiguration.UseLibrarySearchPath">true</value>
     <value type="bool" key="RunConfiguration.UseQmlDebuggerAuto">true</value>
-    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage21/rrs-scenario-editor/build/Desktop-Release</value>
+    <value type="QString" key="RunConfiguration.WorkingDirectory.default">D:/RRS/rrs-scenario-editor-stage36-source/rrs-scenario-editor/build/Desktop-Release</value>
    </valuemap>
-   <value type="qlonglong" key="ProjectExplorer.Target.RunConfigurationCount">14</value>
+   <value type="qlonglong" key="ProjectExplorer.Target.RunConfigurationCount">15</value>
   </valuemap>
  </data>
  <data>

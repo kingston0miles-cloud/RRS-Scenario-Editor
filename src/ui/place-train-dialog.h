@@ -69,11 +69,6 @@ public:
         return coord_box_;
     }
 
-    QLineEdit *nameEdit() const
-    {
-        return name_edit_;
-    }
-
     QCheckBox *autoBox() const
     {
         return auto_box_;
@@ -105,12 +100,10 @@ private:
     QLabel *warnings_label_ = nullptr;
     QLabel *behaviour_label_ = nullptr;
     QLabel *assign_label_ = nullptr;
-    QLineEdit *name_edit_ = nullptr;
     QDoubleSpinBox *coord_box_ = nullptr;
     QPushButton *flip_button_ = nullptr;
     QCheckBox *auto_box_ = nullptr;
     QCheckBox *planned_box_ = nullptr;
-    QComboBox *class_box_ = nullptr;
     QCheckBox *no_auto_box_ = nullptr;
     QDialogButtonBox *buttons_ = nullptr;
 

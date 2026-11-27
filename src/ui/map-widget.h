@@ -2,6 +2,7 @@
 #define     RSE_MAP_WIDGET_H
 
 #include    <QWidget>
+#include    <QTimer>
 #include    <QTransform>
 
 #include    "route/route.h"
@@ -55,8 +56,14 @@ public:
         return pick_;
     }
 
-    /// Подсветить путь поезда по расписанию и его станции (пустой путь - убрать)
-    void setTripOverlay(const QVector<PathSegment> &path, const QVector<TimetableStation> &stations);
+    /// Подсветить путь поезда по расписанию и его станции (пустой путь - убрать).
+    /// Конфликтные пути рисуются красным поверх оранжевого маршрута
+    void setTripOverlay(const QVector<PathSegment> &path, const QVector<TimetableStation> &stations,
+                        const QStringList &conflict_trajectories = {});
+
+    /// Перелёт к середине траектории с кратковременной подсветкой (ссылки в
+    /// замечаниях графика и клик по событию)
+    void locateTrajectory(const QString &trajectory);
 
     /// Подсветить светофоры, которые откроются маршрутами графика (пусто - убрать;
     /// из окна графика, этап 19)
@@ -148,6 +155,13 @@ private:
     QVector<PathSegment> trip_path_;
     QVector<TimetableStation> trip_stations_;
     QVector<SignalMark> signal_marks_;
+
+    /// Конфликтные пути графика: участки маршрута рисуются красным, не оранжевым
+    QStringList trip_conflicts_;
+
+    /// Траектория кратковременной подсветки (locateTrajectory) и её таймер
+    QString highlight_traj_;
+    QTimer highlight_timer_;
 
     /// Масштаб: пикселей на метр
     double scale_ = 1.0;

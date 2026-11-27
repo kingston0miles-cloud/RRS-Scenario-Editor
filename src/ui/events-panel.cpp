@@ -33,8 +33,11 @@ EventsPanel::EventsPanel(QWidget *parent)
     remove_ = new QPushButton(tr("Удалить"), this);
     up_ = new QPushButton(tr("Выше"), this);
     down_ = new QPushButton(tr("Ниже"), this);
+    locate_ = new QPushButton(tr("На карте…"), this);
+    locate_->setToolTip(tr("Перелететь к месту события на карте (путь события "
+                           "подсветится)"));
 
-    for (QPushButton *b : { add_, edit_, remove_, up_, down_ })
+    for (QPushButton *b : { add_, edit_, remove_, up_, down_, locate_ })
     {
         row->addWidget(b);
     }
@@ -63,8 +66,13 @@ EventsPanel::EventsPanel(QWidget *parent)
     });
     connect(up_, &QPushButton::clicked, this, [this] { emit moveRequested(currentIndex(), -1); });
     connect(down_, &QPushButton::clicked, this, [this] { emit moveRequested(currentIndex(), 1); });
+    connect(locate_, &QPushButton::clicked, this, [this] { emit locateRequested(currentIndex()); });
     connect(tree_, &QTreeWidget::itemDoubleClicked, this, [this] { emit editRequested(currentIndex()); });
     connect(tree_, &QTreeWidget::currentItemChanged, this, [this] { updateButtons(); });
+
+    // Неактивные кнопки серые, как в панели поездов
+    setStyleSheet(QStringLiteral(
+        "QPushButton:disabled { color: #9aa0a6; background: #f0f0f0; }"));
 
     updateButtons();
 }
@@ -143,6 +151,7 @@ void EventsPanel::updateButtons()
     remove_->setEnabled(has);
     up_->setEnabled(has && i > 0);
     down_->setEnabled(has && i + 1 < rowCount());
+    locate_->setEnabled(has);
 }
 
 } // namespace rse

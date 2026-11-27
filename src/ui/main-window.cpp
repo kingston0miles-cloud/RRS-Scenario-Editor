@@ -15,6 +15,7 @@
 #include    "ui/rolling-stock-panel.h"
 
 #include    <QAction>
+#include    <QActionGroup>
 #include    <QCheckBox>
 #include    <QCloseEvent>
 #include    <QCryptographicHash>
@@ -31,6 +32,7 @@
 #include    <QMenuBar>
 #include    <QMessageBox>
 #include    <QSettings>
+#include    <QTableWidget>
 #include    <QTimer>
 #include    <QToolButton>
 #include    <QTreeWidget>
@@ -245,6 +247,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(events_panel_, &EventsPanel::editRequested, this, [this](int i) { editEvent(i); });
     connect(events_panel_, &EventsPanel::removeRequested, this, &MainWindow::removeEvent);
     connect(events_panel_, &EventsPanel::moveRequested, this, &MainWindow::moveEvent);
+    connect(events_panel_, &EventsPanel::locateRequested, this, &MainWindow::locateEvent);
     connect(trains_panel_, &TrainsPanel::selectionChanged, this, [this] { updateTripOverlay(); });
     connect(trains_panel_, &TrainsPanel::selectionChanged, map_, &MapWidget::setSelectedTrain);
 
@@ -272,6 +275,18 @@ QString MainWindow::manualModulesPath()
 //
 //------------------------------------------------------------------------------
 void MainWindow::createActions()
+{
+    createFileMenu();
+    createEditMenu();
+    createHelpMenu();
+    createCheckMenu();
+    createViewMenu();
+}
+
+//------------------------------------------------------------------------------
+// Меню «Файл»
+//------------------------------------------------------------------------------
+void MainWindow::createFileMenu()
 {
     QMenu *file_menu = menuBar()->addMenu(tr("&Файл"));
 
@@ -345,7 +360,13 @@ void MainWindow::createActions()
     QAction *quit = file_menu->addAction(tr("В&ыход"));
     quit->setShortcut(QKeySequence::Quit);
     connect(quit, &QAction::triggered, this, &QWidget::close);
+}
 
+//------------------------------------------------------------------------------
+// Меню «Правка»
+//------------------------------------------------------------------------------
+void MainWindow::createEditMenu()
+{
     QMenu *edit_menu = menuBar()->addMenu(tr("&Правка"));
 
     undo_action_ = edit_menu->addAction(tr("&Отменить"));
@@ -357,21 +378,39 @@ void MainWindow::createActions()
     redo_action_->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z));
     redo_action_->setEnabled(false);
     connect(redo_action_, &QAction::triggered, this, &MainWindow::redo);
+}
 
+//------------------------------------------------------------------------------
+// Меню «Справка»
+//------------------------------------------------------------------------------
+void MainWindow::createHelpMenu()
+{
     QMenu *help_menu = menuBar()->addMenu(tr("&Справка"));
 
     QAction *shortcuts = help_menu->addAction(tr("Сочетания клавиш"));
     shortcuts->setShortcut(Qt::Key_F1);
     shortcuts->setToolTip(tr("Список клавиш редактора и карты (аудит 1.5)"));
     connect(shortcuts, &QAction::triggered, this, &MainWindow::onShowShortcuts);
+}
 
+//------------------------------------------------------------------------------
+// Меню «Проверка»
+//------------------------------------------------------------------------------
+void MainWindow::createCheckMenu()
+{
     QMenu *check_menu = menuBar()->addMenu(tr("&Проверка"));
 
     QAction *check = check_menu->addAction(tr("Проверить &графики сценария…"));
     check->setShortcut(Qt::Key_F7);
     check->setToolTip(tr("Пересечения маршрутов, встречное движение, заторы и ошибки в расписаниях"));
     connect(check, &QAction::triggered, this, &MainWindow::showScheduleCheck);
+}
 
+//------------------------------------------------------------------------------
+// Меню «Вид»
+//------------------------------------------------------------------------------
+void MainWindow::createViewMenu()
+{
     QMenu *view_menu = menuBar()->addMenu(tr("&Вид"));
 
     QAction *fit = view_menu->addAction(tr("Показать весь &маршрут"));
@@ -418,6 +457,47 @@ void MainWindow::createActions()
     warnings_action_->setEnabled(false);
     connect(warnings_action_, &QAction::triggered, this, &MainWindow::onShowWarnings);
     connect(warnings_button_, &QPushButton::clicked, this, &MainWindow::onShowWarnings);
+
+    // Язык интерфейса (этап 30): выбирается из настроек, применяется
+    // после перезапуска - переустановка переводчика на лету требует
+    // ретранслировать все окна, что надёжнее сделать при старте
+    QMenu *lang_menu = view_menu->addMenu(tr("Язык интерфейса"));
+
+    QActionGroup *lang_group = new QActionGroup(this);
+
+    QAction *lang_ru = lang_menu->addAction(QStringLiteral("Русский"));
+    QAction *lang_en = lang_menu->addAction(QStringLiteral("English"));
+
+    for (QAction *a : { lang_ru, lang_en })
+    {
+        a->setCheckable(true);
+        a->setActionGroup(lang_group);
+    }
+
+    QSettings settings(SETTINGS_ORG, SETTINGS_APP);
+    (settings.value(QStringLiteral("ui/language"), QStringLiteral("ru")).toString()
+         == QLatin1String("en") ? lang_en : lang_ru)->setChecked(true);
+
+    connect(lang_ru, &QAction::triggered, this, [this] { onLanguageChanged(QStringLiteral("ru")); });
+    connect(lang_en, &QAction::triggered, this, [this] { onLanguageChanged(QStringLiteral("en")); });
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+void MainWindow::onLanguageChanged(const QString &lang)
+{
+    QSettings settings(SETTINGS_ORG, SETTINGS_APP);
+
+    if (settings.value(QStringLiteral("ui/language"), QStringLiteral("ru")).toString() == lang)
+    {
+        return;
+    }
+
+    settings.setValue(QStringLiteral("ui/language"), lang);
+
+    QMessageBox::information(this, tr("Язык интерфейса"),
+        tr("Язык интерфейса изменится после перезапуска редактора."));
 }
 
 //------------------------------------------------------------------------------
@@ -594,6 +674,12 @@ void MainWindow::placeAt(const Route::Hit &hit)
     refreshTrains();
     trains_panel_->setCurrentIndex(index);
     map_->update();
+
+    // Состав поставлен: режим расстановки выключается, как при Esc -
+    // курсор возвращается в обычный режим без лишнего нажатия
+    has_template_ = false;
+    template_ = PlacedTrain();
+    map_->setPlacementTemplate(nullptr);
 
     statusBar()->showMessage(tr("Поезд «%1» поставлен на %2").arg(dialog.result().name,
                                                               dialog.result().trajectory), 5000);
@@ -1472,6 +1558,66 @@ void MainWindow::moveEvent(int index, int delta)
 }
 
 //------------------------------------------------------------------------------
+// Перелёт к месту события на карте: путь триггера или траектория маршрутного
+// действия, камера в центр с кратковременной подсветкой пути
+//------------------------------------------------------------------------------
+void MainWindow::locateEvent(int index)
+{
+    if (index < 0 || index >= project_info_.events.size())
+    {
+        return;
+    }
+
+    const ScenarioEvent &e = project_info_.events[index];
+
+    // Привязка события: путь триггера (TrajBusy/TrajFree, начало автоподхода),
+    // конечный путь автоподхода или траектория маршрутного действия
+    QString traj = e.traj;
+
+    if (traj.isEmpty())
+    {
+        traj = e.traj2;
+    }
+
+    if (traj.isEmpty())
+    {
+        for (const EventAction &a : e.actions)
+        {
+            if (a.type == ActionType::BuildTrainRoute || a.type == ActionType::BuildShuntingRoute
+                || a.type == ActionType::SetSwitchesAlongRoute)
+            {
+                if (route_.find(a.a) != nullptr)
+                {
+                    traj = a.a;
+                    break;
+                }
+
+                if (route_.find(a.b) != nullptr)
+                {
+                    traj = a.b;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (traj.isEmpty() || route_.find(traj) == nullptr)
+    {
+        QMessageBox::information(this, tr("Событие на карте"),
+                                 tr("У события «%1» нет привязки к траектории маршрута: "
+                                    "оно происходит по времени и не отмечено на карте.")
+                                     .arg(e.title));
+        return;
+    }
+
+    map_->locateTrajectory(traj);
+    raise();
+
+    statusBar()->showMessage(tr("Событие «%1»: путь %2 подсвечен на карте")
+                                 .arg(e.title, traj), 5000);
+}
+
+//------------------------------------------------------------------------------
 // График поезда
 //------------------------------------------------------------------------------
 void MainWindow::editTimetable(int index, const TimetableState *resume)
@@ -1488,6 +1634,12 @@ void MainWindow::editTimetable(int index, const TimetableState *resume)
     // Закреплённые станции трассы («через станцию») хранятся у поезда
     state.pins = train.pins;
 
+    // Станции, убранные из графика крестом и добавленные плюсом, тоже хранятся
+    // у поезда и переживают повторные открытия окна
+    state.removedStations = QSet<QString>(train.timetableHidden.cbegin(),
+                                          train.timetableHidden.cend());
+    state.addedStations = train.timetableExtra;
+
     // Окно не модальное: карта остаётся доступной, а маршрут на ней перерисовывается
     // сразу при каждом изменении графика
     if (timetable_dialog_ != nullptr)
@@ -1502,10 +1654,18 @@ void MainWindow::editTimetable(int index, const TimetableState *resume)
     timetable_index_ = index;
 
     connect(dialog, &TimetableDialog::tripChanged, this,
-            [this](const QVector<PathSegment> &path, const QVector<TimetableStation> &stations)
+            [this](const QVector<PathSegment> &path, const QVector<TimetableStation> &stations,
+                   const QStringList &conflicts)
             {
-                map_->setTripOverlay(path, stations);
+                map_->setTripOverlay(path, stations, conflicts);
             });
+
+    // Клик по пути в замечании: камера карты перелетает к пути и подсвечивает его
+    connect(dialog, &TimetableDialog::locateRequested, this, [this](const QString &trajectory)
+    {
+        map_->locateTrajectory(trajectory);
+        raise();
+    });
 
     // Светофоры, которые откроются маршрутами графика, подсвечиваются на карте,
     // пока открыто окно графика
@@ -1532,6 +1692,17 @@ void MainWindow::editTimetable(int index, const TimetableState *resume)
             PlacedTrain t = scenario_.trains()[index];
             t.pins = dialog->state().pins;
             t.trainClass = dialog->category();
+            t.timetableHidden = dialog->state().removedStations.values();
+            t.timetableExtra = dialog->state().addedStations;
+
+            // Номер поезда редактируется в графике; пустое имя не принимается
+            const QString new_name = dialog->trainName();
+
+            if (!new_name.isEmpty())
+            {
+                t.name = new_name;
+            }
+
             scenario_.replace(index, t);
         }
 
@@ -1726,7 +1897,14 @@ void MainWindow::refreshAutoEvents()
         }
     }
 
-    auto_events_panel_->setEvents(planAutoTriggers(route_, scenario_).events, disabled);
+    // Панель показывает ровно то, что попадёт в экспорт: события для всех
+    // поездов с расписанием, как при экспорте (includeAutoModeTrains = true)
+    AutoTriggerOptions ato;
+    ato.includeAutoModeTrains = true;
+    ato.startTime = (project_info_.startTime >= 0) ? project_info_.startTime
+                                                   : suggestStartTime(scenario_);
+
+    auto_events_panel_->setEvents(planAutoTriggers(route_, scenario_, ato).events, disabled);
 }
 
 //------------------------------------------------------------------------------
@@ -2193,10 +2371,46 @@ QStringList MainWindow::shortcutHints() const
 //------------------------------------------------------------------------------
 void MainWindow::onShowShortcuts()
 {
-    QMessageBox box(QMessageBox::Information, tr("Сочетания клавиш"),
-                    tr("Клавиши редактора:"), QMessageBox::Ok, this);
-    box.setDetailedText(shortcutHints().join(QLatin1Char('\n')));
-    box.exec();
+    // Список сразу, без окна-обёртки с «ОК» и скрытыми «деталями»
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Сочетания клавиш"));
+    dialog.resize(640, 540);
+
+    auto *layout = new QVBoxLayout(&dialog);
+
+    const QStringList hints = shortcutHints();
+
+    auto *table = new QTableWidget(hints.size(), 2, &dialog);
+    table->setHorizontalHeaderLabels({ tr("Клавиши"), tr("Действие") });
+    table->verticalHeader()->setVisible(false);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionMode(QAbstractItemView::NoSelection);
+    table->setAlternatingRowColors(true);
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setStretchLastSection(true);
+
+    for (int i = 0; i < hints.size(); ++i)
+    {
+        // Строки вида «Клавиши — действие» (тире с пробелами с обеих сторон)
+        const int dash = hints[i].indexOf(QStringLiteral(" — "));
+
+        table->setItem(i, 0, new QTableWidgetItem(dash > 0 ? hints[i].left(dash) : hints[i]));
+        table->setItem(i, 1, new QTableWidgetItem(dash > 0 ? hints[i].mid(dash + 3) : QString()));
+    }
+
+    layout->addWidget(table, 1);
+
+    auto *buttons = new QHBoxLayout;
+    buttons->addStretch(1);
+
+    auto *close_button = new QPushButton(tr("Закрыть"), &dialog);
+    close_button->setDefault(true);
+    buttons->addWidget(close_button);
+    layout->addLayout(buttons);
+
+    connect(close_button, &QPushButton::clicked, &dialog, &QDialog::accept);
+
+    dialog.exec();
 }
 
 //------------------------------------------------------------------------------
@@ -2254,7 +2468,8 @@ QStringList MainWindow::scanRoutes(const QString &game_root)
 }
 
 //------------------------------------------------------------------------------
-// Стартовый экран (аудит 4.6)
+// Стартовый экран (аудит 4.6). Папка игры запоминается; вопрос показывается,
+// только если папки игры по сохранённому пути нет
 //------------------------------------------------------------------------------
 void MainWindow::maybeShowStartScreen()
 {
@@ -2265,9 +2480,26 @@ void MainWindow::maybeShowStartScreen()
 
     QSettings settings(SETTINGS_ORG, SETTINGS_APP);
 
-    if (!settings.value("showStartScreen", true).toBool())
+    // Папка игры запоминается в QSettings; пока она существует, вопрос не
+    // задаётся: маршрут открывается автоматически (и игра вместе с ним).
+    // Диалог показывается только когда папки по сохранённому пути нет
+    const QString saved_game = settings.value(KEY_LAST_GAME_DIR).toString();
+
+    if (!saved_game.isEmpty() && VehicleCatalog::isGameRoot(saved_game))
     {
-        return;
+        if (openGame(saved_game, false))
+        {
+            const QString saved_route = settings.value(KEY_LAST_ROUTE_DIR).toString();
+
+            if (!saved_route.isEmpty() && QDir(saved_route).exists() && openRoute(saved_route))
+            {
+                return;
+            }
+
+            // Игра найдена, маршрут не открылся - экран выбора маршрута
+            showStartScreen();
+            return;
+        }
     }
 
     showStartScreen();

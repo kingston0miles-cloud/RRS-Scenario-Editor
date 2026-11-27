@@ -7,6 +7,7 @@
 #include    "scenario/consist.h"
 #include    "scenario/export.h"
 #include    "ui/consist-editor-dialog.h"
+#include    "test-utils.h"
 
 #include    <QApplication>
 #include    <QLineEdit>
@@ -32,15 +33,6 @@ using namespace rse;
 
 namespace
 {
-
-void writeFile(const QString &path, const QString &content)
-{
-    QDir().mkpath(QFileInfo(path).absolutePath());
-
-    QFile f(path);
-    QVERIFY2(f.open(QIODevice::WriteOnly), qPrintable(path));
-    f.write(content.toUtf8());
-}
 
 QString vehicleXml(double length, double empty, double payload, bool crane, bool autopilot)
 {

@@ -8,32 +8,12 @@
 #include    "scenario/consist.h"
 #include    "scenario/events.h"
 #include    "scenario/export.h"
+#include    "test-utils.h"
 
 using namespace rse;
 
 namespace
 {
-
-void writeFile(const QString &path, const QString &content)
-{
-    QDir().mkpath(QFileInfo(path).absolutePath());
-
-    QFile f(path);
-    QVERIFY2(f.open(QIODevice::WriteOnly), qPrintable(path));
-    f.write(content.toUtf8());
-}
-
-QString readFile(const QString &path)
-{
-    QFile f(path);
-
-    if (!f.open(QIODevice::ReadOnly))
-    {
-        return QString();
-    }
-
-    return QString::fromUtf8(f.readAll());
-}
 
 QString vehicleXml(double length, double empty, double payload, bool crane, bool autopilot)
 {
@@ -227,6 +207,131 @@ private slots:
         QVERIFY2(p3.ok(), qPrintable(p3.errors.join("; ")));
         QVERIFY(!p3.trains[1].writeConfig);
         QCOMPARE(p3.trains[1].configName, QString("demo-B"));
+
+        // Пакет-дополнение (этап 29): минимальное дерево игры поверху
+        opt.addonDir = dir_.path() + "/addon";
+        const ExportPlan p4 = planExport(route_, again, scenario_, opt);
+        QVERIFY2(p4.ok(), qPrintable(p4.errors.join("; ")));
+        QVERIFY2(writeExport(route_, again, scenario_, p4, opt, &err), qPrintable(err));
+
+        const QString pkg = dir_.path() + "/addon/routes/r/scenarios/demo";
+        QVERIFY(QFile::exists(pkg + "/main.lua"));
+        QVERIFY(QFile::exists(pkg + "/README.md"));
+        QVERIFY(QFile::exists(pkg + "/timetable/Поезд 1.xml"));
+        QVERIFY(QFile::exists(dir_.path() + "/addon/cfg/trains/demo-B.xml"));
+        QVERIFY(QFile::exists(dir_.path() + "/addon/README-package.md"));
+        QVERIFY(readFile(pkg + "/main.lua") == readFile(routeDir() + "/scenarios/demo/main.lua"));
+        QVERIFY(readFile(pkg + "/timetable/Поезд 1.xml")
+                == readFile(routeDir() + "/scenarios/demo/timetable/Поезд 1.xml"));
+
+        // Платформы станции попадают в XML расписания (этап 27)
+        Scenario pl = scenario_;
+        PlacedTrain pt = pl.trains()[0];
+        QVERIFY(!pt.timetable.stations.isEmpty());
+        pt.timetable.stations[0].rightPlatform = 1;
+        pt.timetable.stations[0].leftPlatform = -1;
+        pl.replace(0, pt);
+        const ExportPlan p5 = planExport(route_, again, pl, opt);
+        QVERIFY2(p5.ok(), qPrintable(p5.errors.join("; ")));
+        QVERIFY2(writeExport(route_, again, pl, p5, opt, &err), qPrintable(err));
+        const QString plxml = readFile(routeDir() + "/scenarios/demo/timetable/Поезд 1.xml");
+        QVERIFY(plxml.contains("<IsRightPlatform>1</IsRightPlatform>"));
+        QVERIFY(!plxml.contains("<IsLeftPlatform>"));
+    }
+
+    void timetableKeepsApproachWithOrdering()
+    {
+        // Два поезда одной категории идут по одному пути со сдвигом в минуту:
+        // редактор строит события очерёдности, но подход и уход в расписании
+        // сохраняются. Движок строит маршруты по графику для любого поезда -
+        // и с автоведением, и без него, поэтому поля нельзя стирать
+        Scenario sc = scenario_;
+        PlacedTrain first = sc.trains()[0];
+        first.name = "Поезд 2";
+        // Встаёт дальше по тому же пути, чтобы габариты не пересекались
+        first.coord = 240.0;
+        first.timetable.stations[0].targetCoord = 240.0;
+
+        for (TimetableStation &st : first.timetable.stations)
+        {
+            st.arrival -= 60;
+            st.departure -= 60;
+        }
+
+        sc.add(first);
+
+        ExportOptions opt;
+        opt.info.scenarioName = "demo-order";
+        opt.overwrite = true;
+
+        const ExportPlan plan = planExport(route_, catalog_, sc, opt);
+        QVERIFY2(plan.ok(), qPrintable(plan.errors.join("; ")));
+        QVERIFY2(writeExport(route_, catalog_, sc, plan, opt, nullptr), "writeExport");
+
+        // Предусловие: между поездами действительно построена очерёдность
+        const QString lua = readFile(routeDir() + "/scenarios/demo-order/main.lua");
+        QVERIFY(lua.contains("Очерёдность"));
+
+        const QString xml = readFile(routeDir() + "/scenarios/demo-order/timetable/Поезд 1.xml");
+        QVERIFY(xml.contains("<ApproachTraj>"));
+        QVERIFY(xml.contains("<RemovalTraj>"));
+        // Ручные значения станций не теряются и совпадают с расчётом
+        QVERIFY(xml.contains("<RemovalTraj>U</RemovalTraj>"));
+    }
+
+    void nonBotTimetableKeepsMandatoryRouteEvents()
+    {
+        // В RRS нормативный график обрабатывается компонентами Autopilot.
+        // Для обычного поезда редактор обязан экспортировать Lua-события,
+        // даже если пользователь отключил дополнительные триггеры для ботов.
+        Scenario sc;
+        PlacedTrain t = scenario_.trains()[0];
+        t.autoMode = false;
+        t.noAutoEvents = false;
+        sc.add(t);
+
+        ExportOptions opt;
+        opt.info.scenarioName = "non-bot-timetable";
+        opt.autoTriggers = false;
+
+        const ExportPlan plan = planExport(route_, catalog_, sc, opt);
+        QVERIFY2(plan.ok(), qPrintable(plan.errors.join("; ")));
+        QVERIFY(!plan.autoEvents.isEmpty());
+
+        bool has_route_action = false;
+        for (const ScenarioEvent &event : plan.autoEvents)
+        {
+            for (const EventAction &action : event.actions)
+            {
+                has_route_action = has_route_action || action.type == ActionType::BuildTrainRoute;
+            }
+        }
+        QVERIFY(has_route_action);
+
+        QString err;
+        QVERIFY2(writeExport(route_, catalog_, sc, plan, opt, &err), qPrintable(err));
+        const QString lua = readFile(routeDir() + "/scenarios/non-bot-timetable/main.lua");
+        QVERIFY(lua.contains("[rse-auto begin]"));
+        QVERIFY(lua.contains("buildTrainRoute("));
+        QVERIFY(lua.contains("setTimeTrigger("));
+    }
+
+    void disabledNonBotRouteEventsAreReported()
+    {
+        Scenario sc;
+        PlacedTrain t = scenario_.trains()[0];
+        t.autoMode = false;
+        t.noAutoEvents = true;
+        sc.add(t);
+
+        ExportOptions opt;
+        opt.info.scenarioName = "manual-routes-only";
+        opt.autoTriggers = false;
+
+        const ExportPlan plan = planExport(route_, catalog_, sc, opt);
+        QVERIFY2(plan.ok(), qPrintable(plan.errors.join("; ")));
+        QVERIFY(plan.autoEvents.isEmpty());
+        QVERIFY(plan.warnings.join("\n").contains("автоматические события маршрутов отключены"));
     }
 
     void problems()
@@ -264,7 +369,8 @@ private slots:
     {
         const ExportWarningGroups g = groupExportWarnings({
             QStringLiteral("Поезд «1»: график задан, но бот выключен - по графику ведёт "
-                           "поезд только автопилот."),
+                           "автоведения; маршруты и сигналы по графику редактор "
+                           "сформирует отдельными событиями."),
             QStringLiteral("Поезд «2»: бот включён, но у крайней единицы нет автопилота - "
                            "автоведение не заработает."),
             QStringLiteral("Сцепка «3»: нет графика - после сцепки поезд будет стоять."),
@@ -274,10 +380,12 @@ private slots:
             QStringLiteral("Маршруты: «1», «B»: маршрут приёма не строится."),
             QStringLiteral("Событие 1 «x»: траектория «nope» не найдена.") });
 
-        // Поезд может не поехать: оба сломанных бота, сцепка без графика, ручные правки
-        QCOMPARE(g.stop.size(), 4);
-        // Возможные заторы: проверка графиков и маршруты
-        QCOMPARE(g.jam.size(), 2);
+        // Поезд может не поехать: оба сломанных бота, сцепка без графика,
+        // ручные правки main.lua и «Маршруты: маршрут приёма не строится»
+        // (ключ «не строится» приоритетнее jam-ключа «Маршруты:»)
+        QCOMPARE(g.stop.size(), 5);
+        // Возможные заторы: проверка графиков
+        QCOMPARE(g.jam.size(), 1);
         QCOMPARE(g.info.size(), 1);
         QVERIFY(g.info.first().contains("Событие 1"));
     }
@@ -347,7 +455,13 @@ private slots:
         QVERIFY(plan.warnings.join("\n").contains("неизвестно"));
 
         QVERIFY2(writeExport(route_, catalog_, scenario_, plan, opt, &err), qPrintable(err));
-        QVERIFY(readFile(scenario_dir + "/" + plan.mainBackupName).contains("чужие правки"));
+
+        // Последняя по имени резервная копия содержит чужие правки (при
+        // нескольких экспортах в одну секунду копии получают номер -2, -3…)
+        const QStringList baks = QDir(scenario_dir).entryList(
+            QStringList(QStringLiteral("main.lua.bak-*")), QDir::Files, QDir::Name);
+        QVERIFY(!baks.isEmpty());
+        QVERIFY(readFile(scenario_dir + "/" + baks.last()).contains("чужие правки"));
     }
 
     void eventsLuaAndChecks()

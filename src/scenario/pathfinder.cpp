@@ -99,6 +99,11 @@ PathResult findPath(const Route &route, const QString &traj0, double coord0, int
         res.length = seg.length();
         res.wrongWay = (route.orientation(traj0) != 0 && route.orientation(traj0) != dir0);
 
+        if (res.wrongWay)
+        {
+            res.wrongTrajectories << traj0;
+        }
+
         return res;
     }
 
@@ -239,8 +244,11 @@ PathResult findPath(const Route &route, const QString &traj0, double coord0, int
         if (o != 0 && o != seg.dir)
         {
             res.wrongWay = true;
+            res.wrongTrajectories << seg.trajectory;
         }
     }
+
+    res.wrongTrajectories.removeDuplicates();
 
     for (const PathSegment &s : std::as_const(res.segments))
     {

@@ -365,6 +365,16 @@ static QJsonObject buildProject(const QString &path, const ProjectInfo &info,
             o["pins"] = pins;
         }
 
+        if (!t.timetableHidden.isEmpty())
+        {
+            o["timetable_hidden"] = QJsonArray::fromStringList(t.timetableHidden);
+        }
+
+        if (!t.timetableExtra.isEmpty())
+        {
+            o["timetable_extra"] = QJsonArray::fromStringList(t.timetableExtra);
+        }
+
         if (t.timetable.valid)
         {
             o["timetable"] = timetableToJson(t.timetable);
@@ -512,6 +522,16 @@ static bool projectFromJsonObject(const QJsonObject &root, const QString &base_p
             pin.track = po["track"].toString();
             pin.trackCoord = po["coord"].toDouble();
             t.pins.push_back(pin);
+        }
+
+        for (const QJsonValue &h : o["timetable_hidden"].toArray())
+        {
+            t.timetableHidden << h.toString();
+        }
+
+        for (const QJsonValue &x : o["timetable_extra"].toArray())
+        {
+            t.timetableExtra << x.toString();
         }
 
         if (o.contains("timetable"))

@@ -145,6 +145,9 @@ QString RollingStockPanel::sourceText(ModuleSource source)
 {
     switch (source)
     {
+    case ModuleSource::OwnConfig:
+        return QObject::tr("из конфига единицы (RRS 1.10)");
+
     case ModuleSource::TrainExact:
         return QObject::tr("из состава");
 

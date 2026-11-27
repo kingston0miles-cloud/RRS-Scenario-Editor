@@ -14,6 +14,7 @@
 #include    "ui/rolling-stock-panel.h"
 #include    "ui/trains-panel.h"
 #include    "scenario/project.h"
+#include    "test-utils.h"
 
 #include    <QApplication>
 #include    <QCheckBox>
@@ -42,15 +43,6 @@ void saveShot(const QImage &img, const QString &name)
 
 //------------------------------------------------------------------------------
 // Записать файл с каталогами
-//------------------------------------------------------------------------------
-void writeFile(const QString &path, const QString &content)
-{
-    QDir().mkpath(QFileInfo(path).absolutePath());
-
-    QFile f(path);
-    QVERIFY2(f.open(QIODevice::WriteOnly), qPrintable(path));
-    f.write(content.toUtf8());
-}
 
 //------------------------------------------------------------------------------
 // Минимальный маршрут для теста закрытия: прямая T1 8 км со станциями A, B, C
@@ -353,7 +345,6 @@ void TestMainWindow::placeTrainByClick()
         QVERIFY(dlg->result().dir == -1);
         QVERIFY(dlg->okButton()->isEnabled() || !dlg->warningsText().isEmpty());
 
-        dlg->nameEdit()->setText("Первый");
         dlg->okButton()->click();
     });
 
@@ -364,7 +355,10 @@ void TestMainWindow::placeTrainByClick()
     QCOMPARE(w.scenario().size(), 1);
 
     const PlacedTrain &t = w.scenario().trains().first();
-    QCOMPARE(t.name, QString("Первый"));
+
+    // Номер поезда теперь задаётся в графике (правка 5), при постановке
+    // имя генерируется автоматически
+    QVERIFY(!t.name.isEmpty());
     QCOMPARE(t.trajectory, QString("track_a_p1a"));
     QCOMPARE(t.dir, -1);
     QVERIFY(t.length > 0.0);

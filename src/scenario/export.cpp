@@ -9,6 +9,7 @@
 #include    "scenario/trip.h"
 
 #include    <QCryptographicHash>
+#include    <cerrno>
 #include    <QDateTime>
 #include    <QDir>
 #include    <QFile>
@@ -663,10 +664,18 @@ ExportPlan planExport(const Route &route, const VehicleCatalog &catalog, const S
 
         if (t.timetable.valid)
         {
+            if (t.noAutoEvents && !et.autoMode)
+            {
+                plan.warnings << QObject::tr("%1: автоматические события маршрутов отключены для "
+                                             "поезда без автоведения; светофоры и стрелки по графику "
+                                             "не будут переключаться.").arg(who);
+            }
+
             if (!et.autoMode)
             {
-                plan.warnings << QObject::tr("%1: график задан, но бот выключен — по графику ведёт "
-                                             "поезд только автопилот.").arg(who);
+                plan.warnings << QObject::tr("%1: движение по графику не будет автоматическим без "
+                                             "автопилота; маршруты и сигналы по графику редактор "
+                                             "сформирует отдельными событиями.").arg(who);
             }
 
             if (t.timetable.startTime < plan.startTime)
@@ -748,17 +757,18 @@ ExportPlan planExport(const Route &route, const VehicleCatalog &catalog, const S
         }
     }
 
-    if (options.autoTriggers)
     {
+        // Поезда без автоведения не получают график внутри RRS: симулятор
+        // передаёт timetable только компонентам Autopilot. Поэтому события,
+        // открывающие маршруты и сигналы по графику, для таких поездов обязательны.
+        // Флажок экспорта управляет только дополнительной обработкой поездов-ботов
+        // и координацией их маршрутов с остальными составами.
         AutoTriggerOptions ato;
         ato.startTime = plan.startTime;
-        ato.forBots = true;
+        ato.includeAutoModeTrains = options.autoTriggers;
 
         const AutoTriggerPlan at = planAutoTriggers(route, scenario, ato);
-
         plan.autoEvents = at.events;
-        plan.clearApproach = at.clearApproach;
-        plan.clearRemoval = at.clearRemoval;
 
         for (const QString &w : at.warnings)
         {
@@ -998,7 +1008,9 @@ bool writeExport(const Route &route, const VehicleCatalog &catalog, const Scenar
 
         QString err;
 
-        if (!catalog.saveTrain(et.config, false, &err))
+        // Перезапись состава разрешена вместе с перезаписью сценария:
+        // при повторном экспорте файл состава уже существует в cfg/trains
+        if (!catalog.saveTrain(et.config, options.overwrite, &err))
         {
             return fail(err);
         }
@@ -1048,10 +1060,22 @@ bool writeExport(const Route &route, const VehicleCatalog &catalog, const Scenar
                 const QString name = plan.mainBackupName.isEmpty() ? mainBackupName()
                                                                    : plan.mainBackupName;
 
-                if (!QFile::copy(main_path, dir.filePath(name)))
+                // Несколько экспортов в одну секунду: метка времени в имени
+                // совпадает - к копии добавляется номер, каждая прежняя версия
+                // main.lua сохраняется под своим именем
+                QString dst = dir.filePath(name);
+
+                for (int n = 2; QFile::exists(dst) && n < 100; ++n)
                 {
-                    return fail(QObject::tr("Не удалось сохранить резервную копию %1: %2")
-                                    .arg(name, old.errorString()));
+                    dst = dir.filePath(QStringLiteral("%1-%2").arg(name).arg(n));
+                }
+
+                errno = 0;
+
+                if (!QFile::copy(main_path, dst))
+                {
+                    return fail(QObject::tr("Не удалось сохранить резервную копию %1: errno %2")
+                                    .arg(QDir(plan.scenarioDir).relativeFilePath(dst)).arg(errno));
                 }
             }
         }
@@ -1076,28 +1100,177 @@ bool writeExport(const Route &route, const VehicleCatalog &catalog, const Scenar
 
         timetableApproachRemoval(route, t, &approach, &removal);
 
-        // Где маршрут строит триггер очерёдности, автопилот его строить не должен
-        for (int k = 0; k < t.timetable.stations.size(); ++k)
-        {
-            const QString &appr = t.timetable.stations[k].approachTrajectory;
-            const QString &rem = t.timetable.stations[k].removalTrajectory;
-
-            if (plan.clearApproach.value(t.name).value(k) && appr.isEmpty() && k < approach.size())
-            {
-                approach[k].clear();
-            }
-
-            if (plan.clearRemoval.value(t.name).value(k) && rem.isEmpty() && k < removal.size())
-            {
-                removal[k].clear();
-            }
-        }
+        // Подход и уход пишутся в расписание всегда, как в сценариях разработчиков
+        // игры: движок строит маршруты по графику для любого поезда - и с
+        // автоведением, и без него, а события по триггерам остаются страховкой
 
         if (!write(dir.filePath(QStringLiteral("timetable/%1.xml").arg(t.name)),
                    timetableXml(t, approach, removal)))
         {
             return false;
         }
+    }
+
+    // Пакет-дополнение: копия записанного сценария в отдельное дерево (этап 29)
+    if (!options.addonDir.trimmed().isEmpty()
+        && !buildAddonPackage(route, scenario, catalog, plan, dir.absolutePath(),
+                              options.addonDir, error))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+//------------------------------------------------------------------------------
+// Копирование каталога со всем содержимым
+//------------------------------------------------------------------------------
+static bool copyDirTree(const QString &src, const QString &dst)
+{
+    QDir s(src);
+
+    if (!QDir().mkpath(dst))
+    {
+        return false;
+    }
+
+    for (const QFileInfo &entry : s.entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot))
+    {
+        if (entry.isDir())
+        {
+            if (!copyDirTree(entry.absoluteFilePath(), QDir(dst).filePath(entry.fileName())))
+            {
+                return false;
+            }
+        }
+        else if (!QFile::copy(entry.absoluteFilePath(), QDir(dst).filePath(entry.fileName())))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+//------------------------------------------------------------------------------
+// Пакет-дополнение (этап 29): дерево, копируемое поверх установленной игры
+//------------------------------------------------------------------------------
+bool buildAddonPackage(const Route &route, const Scenario &scenario,
+                       const VehicleCatalog &catalog, const ExportPlan &plan,
+                       const QString &scenario_dir, const QString &addon_dir,
+                       QString *error)
+{
+    if (addon_dir.trimmed().isEmpty())
+    {
+        if (error != nullptr)
+        {
+            *error = QObject::tr("Каталог пакета-дополнения не задан.");
+        }
+
+        return false;
+    }
+
+    const QString route_name = QFileInfo(route.dir()).fileName();
+    const QString scenario_name = QFileInfo(scenario_dir).fileName();
+    const QDir addon(addon_dir);
+
+    if (!addon.mkpath(QStringLiteral(".")))
+    {
+        if (error != nullptr)
+        {
+            *error = QObject::tr("Не удалось создать каталог пакета: %1").arg(addon_dir);
+        }
+
+        return false;
+    }
+
+    // Сценарий: прежний пакет того же сценария заменяется целиком
+    const QString dst_scenario = addon.filePath(
+        QStringLiteral("routes/%1/scenarios/%2").arg(route_name, scenario_name));
+
+    if (QFileInfo::exists(dst_scenario) && !QDir(dst_scenario).removeRecursively())
+    {
+        if (error != nullptr)
+        {
+            *error = QObject::tr("Не удалось заменить прежний пакет сценария: %1").arg(dst_scenario);
+        }
+
+        return false;
+    }
+
+    if (!copyDirTree(scenario_dir, dst_scenario))
+    {
+        if (error != nullptr)
+        {
+            *error = QObject::tr("Не удалось скопировать сценарий в пакет: %1").arg(dst_scenario);
+        }
+
+        return false;
+    }
+
+    // Составы из плана экспорта (configName) из cfg/trains игры
+    const QString dst_trains = addon.filePath(QStringLiteral("cfg/trains"));
+
+    QStringList names;
+
+    for (const ExportTrain &et : plan.trains)
+    {
+        if (!names.contains(et.configName))
+        {
+            names << et.configName;
+        }
+    }
+
+    for (const QString &name : std::as_const(names))
+    {
+        const QString src = catalog.trainFilePath(name);
+
+        if (!QFileInfo::exists(src))
+        {
+            continue;   // состав пришёл из игры, а не записан редактором - он и так есть
+        }
+
+        addon.mkpath(dst_trains);
+
+        const QString dst = QDir(dst_trains).filePath(name + QStringLiteral(".xml"));
+
+        // Повторная сборка пакета: заменяем прежний файл
+        if (QFileInfo::exists(dst) && !QFile::remove(dst))
+        {
+            if (error != nullptr)
+            {
+                *error = QObject::tr("Не удалось заменить прежний состав в пакете: %1").arg(dst);
+            }
+
+            return false;
+        }
+
+        if (!QFile::copy(src, dst))
+        {
+            if (error != nullptr)
+            {
+                *error = QObject::tr("Не удалось скопировать состав «%1» в пакет").arg(name);
+            }
+
+            return false;
+        }
+    }
+
+    // Инструкция пакета
+    QFile readme(addon.filePath(QStringLiteral("README-package.md")));
+
+    if (readme.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    {
+        const QString text = QStringLiteral(
+            "# Пакет-дополнение «%1»\n\n"
+            "Собран редактором сценариев RRS. Содержимое этого каталога копируется поверх "
+            "установленной игры:\n\n"
+            "- `routes/%2/scenarios/%3/` - сценарий (main.lua, README.md, расписания);\n"
+            "- `cfg/trains/` - составы, созданные редактором для сценария.\n\n"
+            "После копирования сценарий появится в списке сценариев маршрута.\n")
+            .arg(scenario_name, route_name, scenario_name);
+
+        readme.write(text.toUtf8());
     }
 
     return true;

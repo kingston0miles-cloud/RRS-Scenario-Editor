@@ -9,6 +9,7 @@
 #include    <algorithm>
 #include    <array>
 #include    <cmath>
+#include    <limits>
 
 namespace rse
 {
@@ -190,6 +191,7 @@ void Route::clear()
     bounds_ = QRectF();
     endpoint_index_.clear();
     path_dir_.clear();
+    path_both_.clear();
 }
 
 //------------------------------------------------------------------------------
@@ -884,7 +886,313 @@ static bool isShuntingLiter(const QString &liter)
 }
 
 //------------------------------------------------------------------------------
-// Правильное направление путей по светофорам.
+// Пара параллельных путей: распознавание двухпутного перегона и вывод
+// направлений по правилу правостороннего движения РЖД (поезда идут по правому
+// пути, встречный путь слева; ПТЭ: «правильный путь», ИДП гл. II).
+//
+// На двухпутном перегоне у каждого пути светофоры своего направления, но часто
+// есть и встречные (пропуск по неправильному пути, двусторонняя автоблокировка
+// однопутных вставок) - литеры дают конфликт ±1. Пара путей решает его
+// геометрией: у соседних траекторий (межосевое 3.2-7.5 м, почти параллельных,
+// близкой длины) направления противоположны, и правильное направление пути -
+// то, при котором сосед оказывается слева. Пара отбрасывается целиком, если
+// однозначный светофор любого члена ей противоречит: соседние станционные
+// пути бывают одного направления (чётные приёмо-отправочные рядом) и правило
+// правостороннего движения к ним неприменимо
+//------------------------------------------------------------------------------
+namespace
+{
+
+constexpr double PAIR_MIN_LENGTH = 80.0;  // короче - горловина, не перегон, м
+constexpr double PAIR_GAP        = 12.0;  // запас габаритов при поиске кандидатов, м
+constexpr double PAIR_DIST_MIN   = 3.2;   // межосевое двухпутной линии >= 4.1 м (ПТЭ), м
+constexpr double PAIR_DIST_MAX   = 7.5;   // шире - разные станционные пути, м
+constexpr double PAIR_TOUCH_MAX  = 15.0;  // сосед в сечении не дальше этого, м
+constexpr double PAIR_SIDE_MIN   = 1.5;   // минимальное боковое смещение соседа, м
+constexpr double PAIR_COS        = 0.95;  // предел «почти параллельны»
+constexpr double PAIR_LEN_TOL    = 0.4;   // допускаемая разность длин пары, доля
+constexpr double PAIR_STEP       = 25.0;  // шаг сэмплирования полилинии, м
+
+// Голоса стрелок направлению траектории: [0] - «туда» (+1), [1] - «обратно» (-1)
+struct DirVotes
+{
+    int normal[2] = { 0, 0 };
+    int wrong[2] = { 0, 0 };
+};
+
+double dot2(const QPointF &a, const QPointF &b)
+{
+    return a.x() * b.x() + a.y() * b.y();
+}
+
+// Расстояние от точки до отрезка, м
+double segPointDistance(const QPointF &p, const QPointF &a, const QPointF &b)
+{
+    const QPointF ab = b - a;
+    const double denom = dot2(ab, ab);
+
+    double t = 0.0;
+
+    if (denom > 0.0)
+    {
+        t = std::clamp(dot2(p - a, ab) / denom, 0.0, 1.0);
+    }
+
+    const QPointF q = a + ab * t;
+
+    return std::hypot(p.x() - q.x(), p.y() - q.y());
+}
+
+// Расстояние до ближайшей точки полилинии; q - проекция (может быть nullptr)
+double nearestOnPolyline(const QPointF &p, const QVector<QPointF> &points, QPointF *q)
+{
+    double best = std::numeric_limits<double>::max();
+
+    for (int i = 0; i + 1 < points.size(); ++i)
+    {
+        const QPointF ab = points[i + 1] - points[i];
+        const double denom = dot2(ab, ab);
+
+        double t = 0.0;
+
+        if (denom > 0.0)
+        {
+            t = std::clamp(dot2(p - points[i], ab) / denom, 0.0, 1.0);
+        }
+
+        const QPointF proj = points[i] + ab * t;
+        const double d = std::hypot(p.x() - proj.x(), p.y() - proj.y());
+
+        if (d < best)
+        {
+            best = d;
+
+            if (q != nullptr)
+            {
+                *q = proj;
+            }
+        }
+    }
+
+    return best;
+}
+
+// Минимальное межосевое расстояние полилиний (первая сэмплируется через шаг)
+double polylineDistance(const TrajectoryData &a, const TrajectoryData &b)
+{
+    double best = std::numeric_limits<double>::max();
+
+    for (int i = 0; i + 1 < a.points.size(); ++i)
+    {
+        const QPointF &p0 = a.points[i];
+        const QPointF &p1 = a.points[i + 1];
+        const double seg = std::hypot(p1.x() - p0.x(), p1.y() - p0.y());
+        const int n = std::max(static_cast<int>(seg / PAIR_STEP), 1);
+
+        for (int k = 0; k < n; ++k)
+        {
+            const double t = static_cast<double>(k) / n;
+            const QPointF p(p0.x() + (p1.x() - p0.x()) * t,
+                            p0.y() + (p1.y() - p0.y()) * t);
+
+            const double d = nearestOnPolyline(p, b.points, nullptr);
+
+            if (d < best)
+            {
+                best = d;
+            }
+        }
+    }
+
+    return best;
+}
+
+// Правостороннее правило для пары: направление пути a, при котором путь b
+// оказывается слева (встречные слева), есть его правильное направление.
+// Сторона определяется в трёх сечениях (30/50/70% длины) по медиане
+bool pairSideDirection(const TrajectoryData &a, const TrajectoryData &b, int &dir_a)
+{
+    std::array<double, 3> sides = { 0.0, 0.0, 0.0 };
+    int taken = 0;
+
+    for (double frac : { 0.3, 0.5, 0.7 })
+    {
+        QPointF tangent;
+
+        const QPointF p = a.pointAt(frac * a.length, &tangent);
+
+        QPointF q;
+
+        if (nearestOnPolyline(p, b.points, &q) > PAIR_TOUCH_MAX)
+        {
+            return false;
+        }
+
+        sides[taken++] = dot2(q - p, QPointF(-tangent.y(), tangent.x()));
+    }
+
+    std::sort(sides.begin(), sides.end());
+
+    const double side = sides[1];
+
+    if (std::abs(side) < PAIR_SIDE_MIN)
+    {
+        return false;
+    }
+
+    dir_a = (side > 0.0) ? 1 : -1;
+
+    return true;
+}
+
+// Направления по парам параллельных путей. Для траектории возвращаются только
+// при согласии всех её принятых пар; конфликт оставляет траекторию без ответа
+QHash<QString, int> pairDirections(const QMap<QString, TrajectoryData> &trajectories,
+                                   const QHash<QString, DirVotes> &votes)
+{
+    QHash<QString, int> result;
+
+    // Однозначный светофор члена - арбитр: пара, ему противоречащая, отбрасывается
+    auto signalDir = [&votes](const QString &name) -> int
+    {
+        const auto it = votes.constFind(name);
+
+        if (it == votes.constEnd())
+        {
+            return 0;
+        }
+
+        const DirVotes &v = it.value();
+
+        if (v.normal[0] > 0 && v.normal[1] == 0)
+        {
+            return 1;
+        }
+
+        if (v.normal[1] > 0 && v.normal[0] == 0)
+        {
+            return -1;
+        }
+
+        if (v.normal[0] == 0 && v.normal[1] == 0)
+        {
+            // Только «неправильные» светофоры: правильное направление обратное
+            if (v.wrong[0] > 0 && v.wrong[1] == 0)
+            {
+                return -1;
+            }
+
+            if (v.wrong[1] > 0 && v.wrong[0] == 0)
+            {
+                return 1;
+            }
+        }
+
+        return 0;
+    };
+
+    QVector<const TrajectoryData *> longs;
+
+    longs.reserve(trajectories.size());
+
+    for (auto it = trajectories.constBegin(); it != trajectories.constEnd(); ++it)
+    {
+        if (it->length > PAIR_MIN_LENGTH)
+        {
+            longs.append(&it.value());
+        }
+    }
+
+    QHash<QString, std::array<int, 2>> pair_votes;
+
+    for (int i = 0; i < longs.size(); ++i)
+    {
+        const TrajectoryData &a = *longs[i];
+
+        for (int j = i + 1; j < longs.size(); ++j)
+        {
+            const TrajectoryData &b = *longs[j];
+
+            // QRectF::intersects считает вырожденный габарит (прямой участок
+            // даёт нулевую высоту) непересекающимся ни с чем, поэтому
+            // перекрытие проверяется по диапазонам координат явно
+            const QRectF ga = a.bounds.adjusted(-PAIR_GAP, -PAIR_GAP, PAIR_GAP, PAIR_GAP);
+            const QRectF gb = b.bounds.adjusted(-PAIR_GAP, -PAIR_GAP, PAIR_GAP, PAIR_GAP);
+
+            if (ga.right() < gb.left() || gb.right() < ga.left()
+                || ga.bottom() < gb.top() || gb.bottom() < ga.top())
+            {
+                continue;
+            }
+
+            if (std::abs(a.length - b.length) > PAIR_LEN_TOL * std::max(a.length, b.length))
+            {
+                continue;
+            }
+
+            const QPointF da = a.points.last() - a.points.first();
+            const QPointF db = b.points.last() - b.points.first();
+            const double la = std::hypot(da.x(), da.y());
+            const double lb = std::hypot(db.x(), db.y());
+
+            if (la <= 0.0 || lb <= 0.0)
+            {
+                continue;
+            }
+
+            if (std::abs(dot2(da, db)) / (la * lb) < PAIR_COS)
+            {
+                continue;
+            }
+
+            const double dist = polylineDistance(a, b);
+
+            if (dist < PAIR_DIST_MIN || dist > PAIR_DIST_MAX)
+            {
+                continue;
+            }
+
+            int dir_a = 0;
+
+            if (!pairSideDirection(a, b, dir_a))
+            {
+                continue;
+            }
+
+            // Однозначный светофор члена - арбитр: пара, ему противоречащая,
+            // отбрасывается целиком
+            const int sa = signalDir(a.name);
+            const int sb = signalDir(b.name);
+
+            if ((sa != 0 && sa != dir_a) || (sb != 0 && sb != -dir_a))
+            {
+                continue;
+            }
+
+            pair_votes[a.name][dir_a > 0 ? 0 : 1] += 1;
+            pair_votes[b.name][(-dir_a) > 0 ? 0 : 1] += 1;
+        }
+    }
+
+    for (auto it = pair_votes.constBegin(); it != pair_votes.constEnd(); ++it)
+    {
+        if ((*it)[0] > 0 && (*it)[1] == 0)
+        {
+            result.insert(it.key(), 1);
+        }
+        else if ((*it)[1] > 0 && (*it)[0] == 0)
+        {
+            result.insert(it.key(), -1);
+        }
+    }
+
+    return result;
+}
+
+} // namespace
+
+//------------------------------------------------------------------------------
+// Правильное направление путей по светофорам и геометрии.
 //
 // Соглашение симулятора (v1.9.4, Topology::open_route_signals): для поезда,
 // движущегося в направлении +1 по траектории, у стрелки впереди открывается
@@ -899,22 +1207,24 @@ static bool isShuntingLiter(const QString &liter)
 // Светофоры с обеими литерами (проходные на перегоне, у них FWD и BWD совпадают)
 // направления не задают. Светофор с буквой "Д" в конце (ЧД, НД) - выход на
 // неправильный путь, он направление не подтверждает, а наоборот указывает
-// неправильное (правильное - противоположное). Из этих признаков получается
-// направление концов траектории; далее оно переносится на соседей через
-// простые стыки
+// неправильное (правильное - противоположное).
+//
+// Направление выводится по уровням, каждый следующий заполняет то, что не
+// заполнено предыдущим:
+//   1) литеры стрелок (см. выше) с переносом по цепочке траекторий;
+//   2) пары параллельных путей - правостороннее движение РЖД (см. выше),
+//      арбитр - однозначные литеры членов пары;
+//   3) конфликт литер (светофоры в обе стороны), не разрешённый парой, -
+//      двусторонний путь (path_both_): по однопутным перегонам с двусторонней
+//      автоблокировкой и станционным путям приёма/отправления поезда ходят
+//      в обе стороны, и назначать им одно направление нельзя
 //------------------------------------------------------------------------------
 void Route::calcPathDirections()
 {
     path_dir_.clear();
+    path_both_.clear();
 
-    // Голоса: [траектория] -> {нормальный +1, нормальный -1, "Д" +1, "Д" -1}
-    struct Votes
-    {
-        int normal[2] = { 0, 0 };
-        int wrong[2] = { 0, 0 };
-    };
-
-    QHash<QString, Votes> votes;
+    QHash<QString, DirVotes> votes;
 
     for (const SwitchData &sw : std::as_const(switches_))
     {
@@ -947,7 +1257,7 @@ void Route::calcPathDirections()
                 return;
             }
 
-            Votes &v = votes[name];
+            DirVotes &v = votes[name];
             (wrong ? v.wrong : v.normal)[sign > 0 ? 0 : 1] += 1;
         };
 
@@ -960,7 +1270,7 @@ void Route::calcPathDirections()
 
     for (auto it = votes.constBegin(); it != votes.constEnd(); ++it)
     {
-        const Votes &v = it.value();
+        const DirVotes &v = it.value();
 
         int dir = 0;
 
@@ -991,7 +1301,30 @@ void Route::calcPathDirections()
         }
     }
 
-    // Перенос по простым стыкам до установления
+    // Уровень 2: пары параллельных путей - правостороннее движение РЖД.
+    // Решают конфликт литер на двухпутных участках и направляют пути без
+    // однозначных светофоров; пути с уровнем 1 не трогаются
+    const QHash<QString, int> pair_dir = pairDirections(trajectories_, votes);
+
+    for (auto it = pair_dir.constBegin(); it != pair_dir.constEnd(); ++it)
+    {
+        if (!path_dir_.contains(it.key()))
+        {
+            path_dir_.insert(it.key(), it.value());
+        }
+    }
+
+    // Траектория с конфликтными голосами (±1) направления по переносу не
+    // получает: по ней ходят в обе стороны, и перенесённое с одной стороны
+    // направление было бы случайным (зависело бы от порядка переноса)
+    auto isConflicting = [&votes](const QString &name) -> bool
+    {
+        const auto it = votes.constFind(name);
+
+        return it != votes.constEnd() && it->normal[0] > 0 && it->normal[1] > 0;
+    };
+
+    // Уровень 3: перенос по простым стыкам до установления
     bool changed = true;
 
     while (changed)
@@ -1012,16 +1345,26 @@ void Route::calcPathDirections()
             const int a = path_dir_.value(sw.bwdPlus, 0);
             const int b = path_dir_.value(sw.fwdPlus, 0);
 
-            if (a != 0 && b == 0)
+            if (a != 0 && b == 0 && !isConflicting(sw.fwdPlus))
             {
                 path_dir_.insert(sw.fwdPlus, a);
                 changed = true;
             }
-            else if (b != 0 && a == 0)
+            else if (b != 0 && a == 0 && !isConflicting(sw.bwdPlus))
             {
                 path_dir_.insert(sw.bwdPlus, b);
                 changed = true;
             }
+        }
+    }
+
+    // Уровень 4: конфликт литер (светофоры в обе стороны), не разрешённый
+    // парой соседнего пути, - двусторонний путь
+    for (auto it = votes.constBegin(); it != votes.constEnd(); ++it)
+    {
+        if (!path_dir_.contains(it.key()) && it->normal[0] > 0 && it->normal[1] > 0)
+        {
+            path_both_.insert(it.key());
         }
     }
 }
@@ -1077,6 +1420,31 @@ SignalRole signalRoleOf(const QString &model)
 int Route::orientation(const QString &trajectory) const
 {
     return path_dir_.value(trajectory, 0);
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+PathDirection Route::pathDirection(const QString &trajectory) const
+{
+    const int o = path_dir_.value(trajectory, 0);
+
+    if (o > 0)
+    {
+        return PathDirection::Fwd;
+    }
+
+    if (o < 0)
+    {
+        return PathDirection::Bwd;
+    }
+
+    if (path_both_.contains(trajectory))
+    {
+        return PathDirection::Both;
+    }
+
+    return PathDirection::Unknown;
 }
 
 //------------------------------------------------------------------------------

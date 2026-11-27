@@ -81,9 +81,6 @@ PlaceTrainDialog::PlaceTrainDialog(const Route &route, const Scenario &scenario,
     dir_row->addWidget(flip_button_);
     form->addRow(tr("Голова смотрит:"), dir_row);
 
-    name_edit_ = new QLineEdit(train_.name, this);
-    form->addRow(tr("Номер поезда (имя файла расписания):"), name_edit_);
-
     auto_box_ = new QCheckBox(tr("Бот: автозапуск и автоведение"), this);
     auto_box_->setChecked(train_.autoMode && train_.autopilotCapable);
     auto_box_->setEnabled(train_.autopilotCapable);
@@ -129,19 +126,6 @@ PlaceTrainDialog::PlaceTrainDialog(const Route &route, const Scenario &scenario,
                                 "(например, если вы настроили события вручную)"));
     form->addRow(QString(), no_auto_box_);
 
-    class_box_ = new QComboBox(this);
-
-    for (int c = 0; c <= static_cast<int>(TrainClass::Service); ++c)
-    {
-        class_box_->addItem(trainClassTitle(static_cast<TrainClass>(c)), c);
-    }
-
-    class_box_->setCurrentIndex(std::clamp(train_.trainClass, 0, static_cast<int>(TrainClass::Service)));
-    class_box_->setToolTip(tr("Определяет очерёдность пропуска: скорый, пассажирский, пригородный, "
-                              "грузовой. Поезд низшей категории не получит маршрут раньше высшей, "
-                              "если их графики спорят за один путь"));
-    form->addRow(tr("Категория поезда:"), class_box_);
-
     planned_box_ = new QCheckBox(tr("Поезд появится позже: только график, на карте не ставить"), this);
     planned_box_->setChecked(train_.planned);
     planned_box_->setToolTip(tr("Расписание запишется в timetable/<имя>.xml. Имя должно совпадать "
@@ -173,8 +157,6 @@ PlaceTrainDialog::PlaceTrainDialog(const Route &route, const Scenario &scenario,
     connect(coord_box_, &QDoubleSpinBox::valueChanged, this, &PlaceTrainDialog::refresh);
     connect(traj_box_, &QComboBox::currentTextChanged, this, &PlaceTrainDialog::onTrajectoryEdited);
     connect(waypoint_box_, QOverload<int>::of(&QComboBox::activated), this, &PlaceTrainDialog::onWaypointChosen);
-    connect(name_edit_, &QLineEdit::textChanged, this, &PlaceTrainDialog::refresh);
-
     refresh();
 }
 
@@ -205,6 +187,11 @@ QString PlaceTrainDialog::directionText(const Route &route, const QString &traje
 
     if (o == 0)
     {
+        if (route.pathDirection(trajectory) == PathDirection::Both)
+        {
+            return tr("двусторонний путь (движение в обе стороны), %1").arg(along);
+        }
+
         return tr("%1 (правильное направление пути не определено)").arg(along);
     }
 
@@ -224,10 +211,8 @@ PlacedTrain PlaceTrainDialog::current() const
     PlacedTrain t = train_;
 
     t.coord = coord_box_->value();
-    t.name = name_edit_->text().trimmed();
     t.autoMode = auto_box_->isEnabled() && auto_box_->isChecked();
     t.planned = planned_box_->isChecked();
-    t.trainClass = class_box_->currentData().toInt();
     t.noAutoEvents = no_auto_box_->isChecked();
 
     return t;

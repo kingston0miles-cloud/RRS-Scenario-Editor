@@ -327,9 +327,6 @@ AutoTriggerPlan planAutoTriggers(const Route &route, const Scenario &scenario,
         const PlacedTrain &t = scenario.trains()[tr.index];
         const int prio = classPriority(effectiveClass(t));
 
-        plan.clearApproach[t.name] = QVector<bool>(t.timetable.stations.size(), false);
-        plan.clearRemoval[t.name] = QVector<bool>(t.timetable.stations.size(), false);
-
         for (const Window &w : tr.windows)
         {
             // Кто с более высоким приоритетом претендует на те же пути в то же время
@@ -405,11 +402,6 @@ AutoTriggerPlan planAutoTriggers(const Route &route, const Scenario &scenario,
                                st.name, rival_train->name,
                                trainClassTitle(effectiveClass(*rival_train)));
 
-                if (w.arrival)
-                    plan.clearApproach[t.name][w.station] = true;
-                else
-                    plan.clearRemoval[t.name][w.station] = true;
-
                 if (w.t0 < rival->t0 && classPriority(effectiveClass(*rival_train)) < prio)
                 {
                     plan.warnings << QObject::tr("По графику %1 идёт раньше «%2», но «%2» старше по "
@@ -420,7 +412,7 @@ AutoTriggerPlan planAutoTriggers(const Route &route, const Scenario &scenario,
 
                 ++gated;
             }
-            else if (t.autoMode && !options.forBots)
+            else if (t.autoMode && !options.includeAutoModeTrains)
             {
                 continue;
             }

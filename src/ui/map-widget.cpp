@@ -98,6 +98,14 @@ MapWidget::MapWidget(QWidget *parent)
     setFocusPolicy(Qt::StrongFocus);
     setMinimumSize(320, 240);
     setAutoFillBackground(false);
+
+    // Подсветка пути после перелёта по ссылке снимается сама
+    highlight_timer_.setSingleShot(true);
+    connect(&highlight_timer_, &QTimer::timeout, this, [this]
+    {
+        highlight_traj_.clear();
+        update();
+    });
 }
 
 //------------------------------------------------------------------------------
@@ -222,10 +230,32 @@ void MapWidget::setPickMode(bool pick)
 //
 //------------------------------------------------------------------------------
 void MapWidget::setTripOverlay(const QVector<PathSegment> &path,
-                               const QVector<TimetableStation> &stations)
+                               const QVector<TimetableStation> &stations,
+                               const QStringList &conflict_trajectories)
 {
     trip_path_ = path;
     trip_stations_ = stations;
+    trip_conflicts_ = conflict_trajectories;
+    update();
+}
+
+//------------------------------------------------------------------------------
+//
+//------------------------------------------------------------------------------
+void MapWidget::locateTrajectory(const QString &trajectory)
+{
+    const TrajectoryData *td = (route_ != nullptr) ? route_->find(trajectory) : nullptr;
+
+    if (td == nullptr)
+    {
+        return;
+    }
+
+    // Середина пути в центре экрана с кратковременной подсветкой
+    viewAt(td->pointAt(td->length / 2.0), 0.7);
+
+    highlight_traj_ = trajectory;
+    highlight_timer_.start(2500);
     update();
 }
 
@@ -414,29 +444,39 @@ void MapWidget::paintEvent(QPaintEvent *)
 
         if (show_arrows_)
         {
-            // Стрелки по правильному направлению пути (по светофорам): «туда» - синие
-            // вдоль траектории, «обратно» - оранжевые против неё; направление
+            // Стрелки по направлению пути: «туда» - синие вдоль траектории,
+            // «обратно» - оранжевые против неё; двусторонний путь (однопутный
+            // перегон с двусторонней автоблокировкой, станционные пути приёма
+            // в обе стороны) - зелёные стрелки в обе стороны; направление
             // неизвестно - серые точки
-            const int o = route_->orientation(traj.name);
+            const PathDirection d = route_->pathDirection(traj.name);
 
             p.setPen(Qt::NoPen);
-            p.setBrush(o < 0 ? QColor(215, 105, 15)
-                             : (o > 0 ? QColor(25, 90, 210) : QColor(150, 155, 165)));
+            p.setBrush(d == PathDirection::Bwd ? QColor(215, 105, 15)
+                       : d == PathDirection::Fwd ? QColor(25, 90, 210)
+                       : d == PathDirection::Both ? QColor(16, 128, 78)
+                       : QColor(150, 155, 165));
 
-            if (o < 0)
+            QPolygonF rev;
+
+            for (int i = poly.size() - 1; i >= 0; --i)
             {
-                QPolygonF rev;
+                rev << poly[i];
+            }
 
-                for (int i = poly.size() - 1; i >= 0; --i)
-                {
-                    rev << poly[i];
-                }
-
+            if (d == PathDirection::Bwd)
+            {
                 drawArrows(p, rev);
             }
             else
             {
-                drawArrows(p, poly, o == 0);
+                drawArrows(p, poly, d != PathDirection::Fwd && d != PathDirection::Both);
+            }
+
+            // Двусторонний путь: вторая серия стрелок навстречу
+            if (d == PathDirection::Both)
+            {
+                drawArrows(p, rev);
             }
 
             p.setBrush(Qt::NoBrush);
@@ -452,22 +492,28 @@ void MapWidget::paintEvent(QPaintEvent *)
         p.setPen(Qt::NoPen);
         p.setBrush(hover_color.darker(120));
 
-        const int ho = route_->orientation(hover_.trajectory);
+        const PathDirection hd = route_->pathDirection(hover_.trajectory);
 
-        if (ho < 0)
+        QPolygonF hover_rev;
+
+        for (int i = hover_poly.size() - 1; i >= 0; --i)
         {
-            QPolygonF rev;
+            hover_rev << hover_poly[i];
+        }
 
-            for (int i = hover_poly.size() - 1; i >= 0; --i)
-            {
-                rev << hover_poly[i];
-            }
-
-            drawArrows(p, rev);
+        if (hd == PathDirection::Bwd)
+        {
+            drawArrows(p, hover_rev);
         }
         else
         {
-            drawArrows(p, hover_poly, ho == 0);
+            drawArrows(p, hover_poly, hd == PathDirection::Unknown);
+        }
+
+        // Двусторонний путь: стрелки в обе стороны
+        if (hd == PathDirection::Both)
+        {
+            drawArrows(p, hover_rev);
         }
 
         p.setBrush(Qt::NoBrush);
@@ -706,7 +752,6 @@ void MapWidget::paintEvent(QPaintEvent *)
     if (!trip_path_.isEmpty())
     {
         p.setBrush(Qt::NoBrush);
-        p.setPen(QPen(QColor(235, 140, 20, 150), 7, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
 
         for (const PathSegment &seg : std::as_const(trip_path_))
         {
@@ -716,6 +761,12 @@ void MapWidget::paintEvent(QPaintEvent *)
             {
                 continue;
             }
+
+            // Конфликтные пути - красным, остальные - оранжевым: сразу видно,
+            // где расписание противоречит другим поездам
+            p.setPen(QPen(trip_conflicts_.contains(seg.trajectory)
+                              ? QColor(200, 30, 30, 170) : QColor(235, 140, 20, 150),
+                          7, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
 
             const QVector<QPointF> pts = td->subPolyline(std::min(seg.from, seg.to),
                                                          std::max(seg.from, seg.to));
@@ -746,6 +797,26 @@ void MapWidget::paintEvent(QPaintEvent *)
             p.setBrush(st.stops() ? QColor(235, 140, 20) : Qt::white);
             p.drawEllipse(sp, 5.5, 5.5);
             p.drawText(sp + QPointF(8, -6), st.name);
+        }
+    }
+
+    // Кратковременная подсветка пути, к которому перелетела камера
+    // (ссылка в замечаниях графика или клик по событию)
+    if (!highlight_traj_.isEmpty())
+    {
+        const TrajectoryData *td = route_->find(highlight_traj_);
+
+        if (td != nullptr)
+        {
+            QPolygonF hl;
+
+            for (const QPointF &pt : td->points)
+            {
+                hl << t.map(pt);
+            }
+
+            p.setPen(QPen(hover_color, 5.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.drawPolyline(hl);
         }
     }
 

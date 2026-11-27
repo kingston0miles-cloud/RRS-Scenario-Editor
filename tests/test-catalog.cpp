@@ -5,23 +5,13 @@
 #include    <QTemporaryDir>
 
 #include    "catalog/vehicle-catalog.h"
+#include    "test-utils.h"
 
 using namespace rse;
 
 namespace
 {
 
-//------------------------------------------------------------------------------
-// Записать текстовый файл (UTF-8), создав каталоги
-//------------------------------------------------------------------------------
-void writeFile(const QString &path, const QString &content)
-{
-    QDir().mkpath(QFileInfo(path).absolutePath());
-
-    QFile f(path);
-    QVERIFY2(f.open(QIODevice::WriteOnly), qPrintable(path));
-    f.write(content.toUtf8());
-}
 
 //------------------------------------------------------------------------------
 // Записать файл как есть (байты, без перекодирования)
@@ -157,6 +147,31 @@ void buildGame(const QString &root)
     writeFile(root + "/modules/carsmod/carsmod.dll", "x");
 }
 
+//------------------------------------------------------------------------------
+// Игра для совместимости с RRS 1.10: единица назначает себе модуль в своём
+// конфиге (Vehicle -> Module), в конфиге состава он может отсутствовать
+//------------------------------------------------------------------------------
+void buildOwnModuleGame(const QString &root)
+{
+    writeFile(root + "/cfg/vehicles/cars/c1.xml",
+              "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Config>\n<Vehicle>\n"
+              "<EmptyMass>1000</EmptyMass>\n<PayloadMass>2000</PayloadMass>\n<Length>10</Length>\n"
+              "<ModuleDir>unitdir</ModuleDir>\n<Module>unitmod</Module>\n"
+              "</Vehicle>\n</Config>\n");
+
+    writeFile(root + "/cfg/trains/t1.xml",
+              trainXml("со старым указанием",
+                       groupXml("trainmod", "trainmod", "cars", "c1", 1)));
+
+    // 1.10-стиль: без Module и ModuleDir в составе
+    writeFile(root + "/cfg/trains/t2.xml",
+              trainXml("новый формат",
+                       "<Vehicle>\n<ModuleConfigDir>cars</ModuleConfigDir>\n"
+                       "<ModuleConfig>c1</ModuleConfig>\n"
+                       "<IsOrientationForward>1</IsOrientationForward>\n<Count>2</Count>\n"
+                       "</Vehicle>\n"));
+}
+
 } // namespace
 
 //------------------------------------------------------------------------------
@@ -186,6 +201,7 @@ private slots:
     void auxiliaryBrokenXmlIsQuiet();
     void toleratesNonUtf8Comment();
     void majorityModuleWins();
+    void ownConfigModuleWins110();
     void installedModuleBreaksTie();
     void tieWithoutModulesIsUnresolved();
     void realGame();
@@ -868,6 +884,42 @@ void TestCatalog::majorityModuleWins()
     }
 
     QVERIFY2(reported, "ожидалось замечание о расхождении и выбранном модуле");
+}
+
+//------------------------------------------------------------------------------
+// RRS 1.10: модуль из конфига единицы старше указания в составе; состав без
+// Module в группе загружается, если модуль назначен единице
+//------------------------------------------------------------------------------
+void TestCatalog::ownConfigModuleWins110()
+{
+    QTemporaryDir tmp;
+    buildOwnModuleGame(tmp.path());
+
+    VehicleCatalog c;
+    QVERIFY2(c.load(tmp.path()), qPrintable(c.errorString()));
+
+    const VehicleConfigData *v = c.findVehicle("cars", "c1");
+    QVERIFY(v != nullptr);
+    QCOMPARE(v->module.id(), QString("unitdir/unitmod"));
+    QVERIFY(v->moduleSource == ModuleSource::OwnConfig);
+
+    // Указание в составе перекрывается модулем единицы
+    const TrainConfigData *t1 = c.findTrain("t1");
+    QVERIFY(t1 != nullptr);
+    QCOMPARE(t1->groups.first().module.id(), QString("unitdir/unitmod"));
+
+    // 1.10-состав без Module в группе читается через конфиг единицы
+    const TrainConfigData *t2 = c.findTrain("t2");
+    QVERIFY(t2 != nullptr);
+    QCOMPARE(t2->groups.size(), 1);
+    QCOMPARE(t2->groups.first().module.id(), QString("unitdir/unitmod"));
+    QCOMPARE(t2->groups.first().count, 2);
+
+    for (const QString &w : c.warnings())
+    {
+        QVERIFY2(!w.contains("t2") || !w.contains("Module"),
+                 qPrintable(QStringLiteral("лишнее замечание для t2: %1").arg(w)));
+    }
 }
 
 //------------------------------------------------------------------------------

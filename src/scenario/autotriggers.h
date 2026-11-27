@@ -4,7 +4,6 @@
 #include    "scenario/events.h"
 #include    "scenario/scenario.h"
 
-#include    <QHash>
 #include    <QString>
 #include    <QStringList>
 #include    <QVector>
@@ -56,7 +55,7 @@ struct AutoTriggerOptions
 
     /// Строить триггеры и для ботов (иначе - только для поездов без автопилота и
     /// для тех маршрутов, где нужна очерёдность)
-    bool forBots = false;
+    bool includeAutoModeTrains = false;
 
     /// Дублировать маршруты событиями по времени графика с повторами, если маршрут
     /// не удалось построить сразу (путь занят): светофоры открываются, когда придёт время
@@ -95,11 +94,6 @@ struct AutoTriggerPlan
     QVector<RouteClaim> claims;
 
     QVector<ScenarioEvent> events;
-
-    /// Для станций с маршрутом по триггерам подход/уход в расписании очищается,
-    /// чтобы автопилот не занял путь первым: имя поезда -> по станциям
-    QHash<QString, QVector<bool>> clearApproach;
-    QHash<QString, QVector<bool>> clearRemoval;
 
     QStringList warnings;
     QStringList notes;
